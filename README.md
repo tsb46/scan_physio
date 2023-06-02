@@ -40,7 +40,7 @@ Note, cubic spline bases of lagged respiratory belt time courses are used as reg
 * For non-linear whole-brain GLM analyses of the respiratory belt amplitudes, using a distributed lag non-linear model (DLNM; Gasparrini et al. 2013), run the following command:
 
 ```
-python glm.py -p resp
+python glm_dlnm.py -p resp
 ```
 Note, cubic spline basis for both the lagged respiratory belt time course and its amplitude values is used as regressors. Also note, no statistical testing is performed on these maps. The output of this analysis is a pickled (scikit-learn) model object (and meta parameters), along with predicted BOLD time courses at regularly spaced lags of the respiratory belt amplitude signal. To assess the response at different amplitudes of the respiratory belt amplitude signal, we assess the predicted BOLD time courses at several amplitude values - z-score = 1, 2, and 3. 
 
