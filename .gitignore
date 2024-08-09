@@ -16,6 +16,9 @@ __pycache__/
 # data folder
 /data
 
+# env folder
+/env
+
 # ignore scratch
 scratch.py
 scratch.ipynb
