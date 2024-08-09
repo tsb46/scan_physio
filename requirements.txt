@@ -1,0 +1,4 @@
+nipype==1.8.6
+pandas==2.0.1
+tedana==24.0.1
+templateflow==24.2.0

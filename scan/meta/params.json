@@ -1,0 +1,31 @@
+{
+  "vanderbilt": {
+    "file_format": {
+      "func": {
+        "echo": "vcon{subject}-scan{session}_ecr_e{echo}.nii.gz",
+        "nii": "vcon{subject}-scan{session}_ecr.nii.gz",
+        "gii": "vcon{subject}-scan{session}_ecr_{hemi}.func.gii"
+      },
+      "anat": "vcon{subject}-anat.nii.gz",
+      "eeg": "vcon{subject}-scan{session}_eeg_pp.mat",
+      "physio": "vcon{subject}-scan{session}_eeg_pp.mat"
+    },
+    "directory": {
+      "func": "data/vanderbilt/func",
+      "anat": "data/vanderbilt/anat",
+      "eeg": "data/vanderbilt/eeg",
+      "physio": "data/vanderbilt/physio"
+    },
+    "multiecho": true,
+    "func": {
+      "trim": 7,
+      "smooth_fwhm": 5.0,
+      "tr": 2.1,
+      "echos": [13, 31, 49],
+      "sliceorder": "scan/meta/vanderbilt_sliceorder.txt"
+    },
+    "anat": {
+      "bet_frac": 0.5
+    }
+  }
+}

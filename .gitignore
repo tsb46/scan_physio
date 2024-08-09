@@ -16,6 +16,10 @@ __pycache__/
 # data folder
 /data
 
+# ignore scratch
+scratch.py
+scratch.ipynb
+
 
 
 
