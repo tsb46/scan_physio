@@ -1,13 +1,22 @@
 """
-Module for loading data (func, eeg, etc.), handling data file paths
-and iterating subject lists.
+Module for handling data file paths and iterating subject lists.
 """
 
 import json
-from typing import Literal
+from enum import Enum
+from typing import Literal, Tuple, Generator
 
 import pandas as pd
 
+from scan import utils
+
+class Field(Enum):
+    """
+    Enum for participant list fields
+    """
+    SUBJECT = 'subject'
+    SESSION = 'session'
+    
 
 class Participant:
     """
@@ -36,39 +45,37 @@ class Participant:
 
     """
 
-    # define available participant list fields
-    avail_fields = ['subject', 'session', 'echo']
-
-    def __init__(self, dataset: Literal['vanderbilt']):
+    def __init__(self, dataset: Literal['vanderbilt', 'newcastle']):
         # load subject list for chosen dataset
         df = pd.read_csv(
             f'scan/meta/{dataset}_participant.csv',
             dtype=str
         )
-        # subject is necessary field and should be first column
-        if 'subject' not in df.columns:
-            raise ValueError('"subject" column missing from participant list')
+        # subject and session are necessary fields
+        if Field.SUBJECT.value not in df.columns:
+            raise ValueError(
+                '"subject" column missing from participant list and is a necessary field'
+            )
+        if Field.SESSION.value not in df.columns:
+            # if session is not present, create a list of empty strings
+            df[Field.SESSION.value] = ''
 
-        # get location of subject column
-        self.subject_loc = df.columns.get_loc('subject')
+        # get location of fields
+        self.fields = [Field.SUBJECT.value, Field.SESSION.value]
+        self.subject_loc = df.columns.get_loc(Field.SUBJECT.value)
+        self.session_loc = df.columns.get_loc(Field.SESSION.value)
 
-        # check participant fields
-        self.fields = []
-        for c in df.columns:
-            if c not in self.avail_fields:
-                raise ValueError(
-                    f"{dataset} subject list column '{c}' not recognized"
-                )
-            self.fields.append(c)
 
         self.dataset = dataset
         # get values for fields from every row in nested list
         self.values = list(zip(*[df[c] for c in self.fields]))
         self.n_scans = len(self.values)
-        # get data formatting
+
+        # get parameters
         with open('scan/meta/params.json', 'rb') as f:
             params = json.load(f)[dataset]
         self.file_format = params['file_format']
+
         # check if multiecho dataset
         self.multiecho = params['multiecho']
         # determine number of echos, if applicable
@@ -92,9 +99,14 @@ class Participant:
             return self.values[self.n]
         raise StopIteration
 
-    def subject(self):
+    def subject(self) -> Generator[str, None, None]:
         """
         iterate through subjects in order
+
+        Returns
+        -------
+        subject: str
+            subject label
         """
         # does not reorder
         subjects = list(
@@ -106,24 +118,30 @@ class Participant:
             yield subjects[n]
             n += 1
 
-    def subject_by_session(self):
+    def subject_by_session(self) -> Generator[Tuple[str, str], None, None]:
         """
         Iterate through subjects and return
         (possible) multiple sessions as a nested
-        list
+        list. If no session field is present, return
+        a list of empty strings.
+
+        Returns
+        -------
+        subj_sess: Tuple[str,str]
+            subject label and session label
         """
-        if 'session' not in self.fields:
-            raise ValueError(f'{self.dataset} has no "session" field')
-        session_loc = self.fields.index('session')
         subjects = list(self.subject())
         n_subj = len(subjects)
         n = 0
         while n < n_subj:
             subj = subjects[n]
-            subj_ses = list(dict.fromkeys(
-                [s[session_loc] for s in self.values
-                if s[self.subject_loc] == subj]
-            ))
+            if self.session_loc is not None:
+                subj_ses = list(dict.fromkeys(
+                    [s[self.session_loc] for s in self.values
+                    if s[self.subject_loc] == subj]
+                ))
+            else:
+                subj_ses = ['']
             yield (subj, subj_ses)
             n += 1
 
@@ -132,12 +150,27 @@ class Participant:
         data: Literal['func', 'anat', 'eeg', 'physio'],
         basedir: str = None,
         echo: bool = False,
-    ):
+    ) -> Generator[str, None, None]:
         """
         iterate through rows and return file path to
         data object (eeg, anat, func or physio). If specified,
         prepend with a directory path with basedir. If multiecho,
         return for all echo fps as a list by setting echo = True.
+
+        Parameters
+        ----------
+        data: Literal['func', 'anat', 'eeg', 'physio']
+            data modality
+        basedir: str
+            base directory file path to prepend to file (optional)
+        echo: bool
+            whethe to return filepaths for individual echos for
+            multiecho data (default: False)
+
+        Returns
+        -------
+        fp: str
+            file path
         """
         # initialize counter
         n = 0
@@ -166,10 +199,11 @@ class Participant:
         self,
         data: Literal['func', 'anat', 'eeg', 'physio'],
         subject: str,
-        func_ext: Literal['nii', 'gii'] = 'nii',
-        hemi: Literal['nii', 'gii'] = None,
         session: str = None,
+        file_ext: utils.FileExtParams = None,
         echo: int = None,
+        physio: str = None,
+        physio_type: Literal['raw', 'out'] = None,
         basedir: str = None
     ) -> str:
         """
@@ -183,45 +217,112 @@ class Participant:
             Choice of data modality
         subject: str
             subject label
-        func_ext:  Literal['nii', 'gii']
-            whether you want a .nii or .gii extension for the functional
-            file path. Ignored if data modality not 'func' (default: nii)
+        file_ext: FileExtParams
+            the file extension for the file path. Must be supplied for
+            eeg and physio modalities.
         hemi: Literal[rh, lh]
             left or right hemisphere. Ignored if data modality not 'func'
+            (optional)
         session: str
             session label (optional)
         echo: int
             echo label (optional)
+        physio: str
+            physio label (optional)
+        physio_type: Literal['raw', 'out']
+            type of physio file to return (optional)
         basedir: str
             prepend filepath to directory (optional)
+
+        Returns
+        -------
+        fp: str
+            file path
         """
+        # check if file format is available for data modality
+        if data not in self.file_format:
+            raise ValueError(f'{data} file format not available for {self.dataset}')
+        # check if basedir is provided
         if basedir is not None:
             basepath = basedir + '/'
         else:
             basepath = ''
-        if (data == 'func') & self.multiecho:
-            if echo is not None:
-                fp = self.file_format[data]['echo'].format(
-                    subject=subject, session=session, echo=echo
-                )
-            else:
-                if func_ext == 'nii':
-                    fp = self.file_format[data]['nii'].format(
-                        subject=subject, session=session
-                    )
-                elif func_ext == 'gii':
-                    fp = self.file_format[data]['gii'].format(
-                        subject=subject, session=session,
-                        hemi=hemi
+
+        # handle file extensions
+        file_ext = self._fileext(data, file_ext)
+
+        if data == 'func':
+            if self.multiecho:
+                if echo is not None:
+                    fp = self.file_format[data]['echo'].format(
+                        subject=subject, session=session, echo=echo,
+                        ext=file_ext
                     )
                 else:
-                    raise ValueError("nii or gii are the only options for hemi")
+                    fp = self.file_format[data]['combined'].format(
+                        subject=subject, session=session,
+                        ext=file_ext
+                    )
+            else:
+                fp = self.file_format[data].format(
+                    subject=subject, session=session,
+                    ext=file_ext
+                )
+        elif data == 'physio':
+            if physio_type == 'raw':
+                fp = self.file_format[data]['raw'][physio].format(
+                    subject=subject, session=session, physio=physio,
+                    ext=file_ext
+                )
+            elif physio_type == 'out':
+                fp = self.file_format[data]['out'].format(
+                    subject=subject, session=session, physio=physio,
+                    ext=file_ext
+                )
         else:
             fp = self.file_format[data].format(
-                subject=subject, session=session
+                subject=subject, session=session,
+                ext=file_ext
             )
         return f'{basepath}{fp}'
 
+    def _fileext(self, data: str, file_ext: str) -> str:
+        """
+        handle file extensions for various data modalities
+        """
+        allowed_func_exts = [
+            'nii', 
+            'nii.gz', 
+            'lh.func.gii', 
+            'rh.func.gii', 
+            'func.gii',
+            'dtseries.nii'
+        ]
 
+        if data == 'func':
+            # default extension for functional scans is nii.gz
+            if file_ext is None:
+                file_ext_out = 'nii.gz'
+            # check if file extension is allowed
+            elif file_ext in allowed_func_exts:
+                file_ext_out = file_ext
+            # check if func.gii is specified
+            elif file_ext == 'func.gii':
+                raise ValueError(
+                    'must specify hemisphere (lh,rh) for func.gii'
+                )
+            else:
+                raise ValueError(
+                    f'file ext {file_ext} not supported for functional scans'
+                )
+        elif data in ['eeg', 'physio']:
+            if file_ext is None:
+                raise ValueError(
+                    "file extension must be supplied for eeg/physio file path"
+                )
+            file_ext_out = file_ext
+        else:
+            file_ext_out = file_ext
 
+        return file_ext_out
 

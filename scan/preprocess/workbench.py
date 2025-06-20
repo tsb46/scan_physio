@@ -7,6 +7,39 @@ from typing import Literal
 import nipype.interfaces.workbench as wb
 
 
+def cifti_smooth(
+    fp_in: str,
+    fp_out: str,
+    fwhm: float
+) -> None:
+    """
+    Smooth CIFTI file using wb_command -cifti-smoothing
+
+    Parameters
+    ----------
+        fp_in: str
+            filepath to CIFTI file to smooth
+        fp_out: str
+            filepath to smoothed CIFTI file
+        fwhm: float
+            FWHM of the Gaussian kernel in mm
+    """
+    # template prefix
+    template_prefix = 'template/fsaverage'
+
+    # convert fwhm to sigma (standard deviation)
+    sigma = fwhm / 2.3548
+    cifti_smooth = wb.CiftiSmooth()
+    cifti_smooth.inputs.in_file = fp_in
+    cifti_smooth.inputs.direction = 'COLUMN'
+    cifti_smooth.inputs.left_surf = f'{template_prefix}.L.inflated.32k_fs_LR.surf.gii'
+    cifti_smooth.inputs.right_surf = f'{template_prefix}.R.inflated.32k_fs_LR.surf.gii'
+    cifti_smooth.inputs.sigma_surf = sigma
+    cifti_smooth.inputs.sigma_vol = sigma
+    cifti_smooth.inputs.out_file = fp_out
+    cifti_smooth.run()
+
+
 def create_midthickness(
     hemi: Literal['rh', 'lh'],
     fs_mid: str,

@@ -1,23 +1,34 @@
 {
   "vanderbilt": {
+    "data": ["anat", "func", "physio"],
     "file_format": {
       "func": {
-        "echo": "vcon{subject}-scan{session}_ecr_e{echo}.nii.gz",
-        "nii": "vcon{subject}-scan{session}_ecr.nii.gz",
-        "gii": "vcon{subject}-scan{session}_ecr_{hemi}.func.gii"
+        "echo": "vcon{subject}-scan{session}_ecr_e{echo}.{ext}",
+        "combined": "vcon{subject}-scan{session}_ecr_{ext}"
       },
       "anat": "vcon{subject}-anat.nii.gz",
-      "eeg": "vcon{subject}-scan{session}_eeg_pp.mat",
-      "physio": "vcon{subject}-scan{session}_eeg_pp.mat"
+      "physio": {
+        "raw": {
+          "physio": "vcon{subject}-scan{session}-physOUT.{ext}",
+          "eeg": "vcon{subject}-scan{session}_eeg_pp.{ext}",
+          "motion": "vcon{subject}-scan{session}_ecr_e1.{ext}"
+        },
+        "out": "vcon{subject}-scan{session}-{physio}.{ext}"
+      }
+    },
+    "physio_ext": {
+      "physio": "mat",
+      "eeg": "mat",
+      "motion": "par"
     },
     "directory": {
       "func": "data/vanderbilt/func",
       "anat": "data/vanderbilt/anat",
-      "eeg": "data/vanderbilt/eeg",
       "physio": "data/vanderbilt/physio"
     },
     "multiecho": true,
     "func": {
+      "pipeline": "full",
       "trim": 7,
       "smooth_fwhm": 5.0,
       "tr": 2.1,
@@ -26,6 +37,80 @@
     },
     "anat": {
       "bet_frac": 0.5
+    },
+    "physio": {
+      "raw": [
+        "physio", 
+        "eeg",
+        "motion"
+      ],
+      "signals": [
+        "eog1", 
+        "eog2", 
+        "emg1", 
+        "emg2", 
+        "emg3", 
+        "resp", 
+        "weight", 
+        "eeg",
+        "motion"
+      ],
+      "out": {
+        "eog1": ["eog1_amp"],
+        "eog2": ["eog2_amp"], 
+        "emg1": ["emg1_amp"], 
+        "emg2": ["emg2_amp"], 
+        "emg3": ["emg3_amp"], 
+        "resp": [
+          "resp_amp",
+          "resp_rate"
+        ], 
+        "weight": ["weight"], 
+        "eeg": ["eeg_vigilance"],
+        "motion": [
+          "framewise_displacement", 
+          "pitch",
+          "trans_z",
+          "trans_y"
+        ]
+      }
+    }
+  },
+  "newcastle": {
+    "data": ["func", "physio"],
+    "file_format": {
+      "func": "sub-{subject}_task-PA2ndNEWSCLIPPREP2DBOLDMB6BLOCK1_dir-PA_space-fsLR_den-91k_bold.{ext}",
+      "physio": {
+        "raw": {
+          "blink": "sub-{subject}_task-PA2ndNEWSCLIPPREP2DBOLDMB6BLOCK1_dir-PA_blinks.{ext}",
+          "saccade": "sub-{subject}_task-PA2ndNEWSCLIPPREP2DBOLDMB6BLOCK1_dir-PA_saccades.{ext}",
+          "physio": "sub-{subject}_task-PA2ndNEWSCLIPPREP2DBOLDMB6BLOCK1_dir-PA_physio.{ext}"
+        },
+        "out": "sub-{subject}_task-PA2ndNEWSCLIPPREP2DBOLDMB6BLOCK1_dir-PA-{physio}.{ext}"
+      }
+    },
+    "physio_ext": {
+      "blink": "csv",
+      "saccade": "csv",
+      "physio": "tsv.gz"
+    },
+    "directory": {
+      "func": "data/newcastle/func",
+      "physio": "data/newcastle/physio"
+    },
+    "multiecho": false,
+    "func": {
+      "pipeline": "cifti-partial",
+      "smooth_fwhm": 5.0,
+      "tr": 0.82,
+      "trim": 12
+    },
+    "physio": {
+      "raw": ["blink", "saccade", "physio"],
+      "signals": ["resp"],
+      "out": {
+        "resp": ["resp_amp", "resp_rate"]
+      }
     }
   }
 }

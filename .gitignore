@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# conda
+.conda/
+
+
 # C extensions
 *.so
 
@@ -10,6 +14,8 @@ __pycache__/
 .DS_Store
 .ipynb_checkpoints/
 
+# logs
+logs/
 # results folder
 /results
 
@@ -22,6 +28,7 @@ __pycache__/
 # ignore scratch
 scratch.py
 scratch.ipynb
+scratch.sh
 
 
 

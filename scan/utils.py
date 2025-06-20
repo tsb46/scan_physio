@@ -4,6 +4,13 @@ Utility module
 
 import os
 
+from typing import Literal
+
+# allowed filed extensions
+FileExtParams = Literal[
+    'nii.gz', 'nii', 'lh.func.gii', 'rh.func.gii',
+    'mat', 'fif', 'txt', 'tsv.gz', 'csv', 'dtseries.nii'
+]
 
 def get_fp_base(fp: str) -> str:
     """

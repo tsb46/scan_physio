@@ -2,21 +2,143 @@
 Pipeline module for preprocessing anatomical, functional, EEG and physio
 datasets.
 """
-
 import json
 import os
 
+from enum import Enum
 from multiprocessing import Pool
-from typing import Literal
+from typing import List, Literal, Tuple
 
+import matplotlib.pyplot as plt
+import neurokit2 as nk
+import nibabel as nb
+import numpy as np
+import pandas as pd
+from tedana.workflows import tedana_workflow
 
 from scan.io.file import Participant
+from scan.preprocess import dataset as ds
 from scan.preprocess import fsl
 from scan.preprocess import freesurfer as fs
+from scan.preprocess import physio
 from scan.preprocess import workbench as wb
-from scan.preprocess.misc import tedana_denoise
+from scan.preprocess.custom import trim_cifti
 from scan import utils
 
+def physio_func_map(
+    signal_labels: list[str],
+) -> dict:
+    """
+    Create a dictionary of physio function mappings. 
+
+    Parameters
+    ----------
+    signal_labels: list[str]
+        list of signal labels
+    
+    Returns
+    -------
+    physio_func_dict: dict
+        dictionary of physio function mappings and their output label mappings
+    """
+    physio_func_dict = {}
+    for p in signal_labels:
+        if p.startswith('eog') or p.startswith('emg'):
+            func = physio.extract_emg_amplitude
+            # fstring for potentially multiple channels
+            output_map = {'emg_amp': f'{p}_amp'}
+        elif p.startswith('resp'):
+            func = physio.extract_resp_rvt
+            output_map = {
+                'resp_amp': 'resp_amp',
+                'resp_rate': 'resp_rate',
+            }
+        elif p.startswith('weight'):
+            func = physio.extract_sample_weight
+            output_map = {'weight': 'weight'}
+        elif p.startswith('eeg'):
+            func = physio.extract_eeg_vigilance
+            output_map = {'eeg_vigilance': 'eeg_vigilance'}
+        elif p.startswith('motion'):
+            func = physio.extract_motion
+            output_map = {
+                'fd': 'framewise_displacement',
+                'pitch': 'pitch',
+                'trans_z': 'trans_z',
+                'trans_y': 'trans_y'
+            }
+        else:
+            raise ValueError(f"Invalid signal type: {p}")
+        
+        physio_func_dict[p] = {
+            'func': func,
+            'output_map': output_map
+        }
+
+    return physio_func_dict
+
+
+class AnatPipeOutMisc(Enum):
+    """
+    Enum for miscellaneous anatomical pipeline outputs
+    """
+    FS_BRAINMASK = "fs_brainmask"
+    FS_MID = "fs_mid"
+    FS_SPHERE = "fs_sphere"
+
+class AnatPipeOut(Enum):
+    """
+    Enum for anatomical pipeline steps
+    """
+    RAW = "raw"
+    FREESURFER = "freesurfer"
+    FREESURFER_SDIR = "freesurfer_sdir"
+    MISC = "misc"
+    FSLR = "fslr"
+
+class FuncPipeOut(Enum):
+    """
+    Enum for full functional pipeline steps - from raw
+    nifti data to surface-based, smoothed GIFTI data
+    """
+    RAW = "raw"
+    TRIM = "trim"
+    MOTION_CORRECT = "motion"
+    BBREGISTER = "coregister"
+    SLICE_TIMING = "slicetime"
+    TEDANA = "tedana"
+    VOL2SURF = "vol2surf" # vol2surf performs surface smoothing
+    FSLR_RESAMPLE = "surface_lr"
+    MISC = "misc"
+
+class FuncPipeOutMisc(Enum):
+    """
+    Enum for miscellaneous functional pipeline outputs
+    """
+    MEAN_VOL = "mean_vol"
+    MCFLIRT_MAT = "mcflirt_mat"
+    SURFREGISTER_MAT = "surfregister_mat"
+    SURFREGISTER_FSL_MAT = "surfregister_fslmat"
+    SURFREGISTER_REG = "surfregister_reg"
+    FS_FUNC_MASK = "fs_func_mask"
+    TEDANA_DENOISED = "tedana_denoised"
+
+class FuncPipeOutCiftiPartial(Enum):
+    """
+    Enum for partial cifti functional pipeline steps - from fMRIPrep
+    CIFTI-2 data to surface-based CIFTI-2 data
+    """
+    RAW = "raw"
+    TRIM = "trim"
+    SURFACE_SMOOTH = "surface_smooth"
+
+class PhysioPipeOut(Enum):
+    """
+    Enum for physio pipeline steps
+    """
+    RAW = "raw"
+    PROC = "proc"
+    SIGNAL = "signal"
 
 class FileMapper:
     """
@@ -46,28 +168,47 @@ class FileMapper:
     def map(self) -> dict:
         """
         define output paths for all preprocessing outputs and create directories for storing them
+
+        Returns
+        -------
+        file_map: str
+            dictionary containing file paths to all preprocessing output
         """
         # create output directories
         dir_map = self._create_directories()
         # store directory paths
         file_map = {
             'anat': {},
-            'func': {}
+            'func': {},
+            'physio': {}
         }
 
         # loop through subjects then sessions
         for subj, ses_list in self.iter.subject_by_session():
+            # initialize file maps
             file_map['anat'][subj] = {}
             file_map['func'][subj] = {}
-            # get directory paths
-            dir_anat = dir_map['anat']
-            dir_func = dir_map['func']
+            file_map['physio'][subj] = {}
 
-            self._map_anat(subj, dir_anat, file_map['anat'][subj])
+            if 'anat' in self.params['data']:
+                self._map_anat(subj, dir_map['anat'], file_map['anat'][subj])
+
             # loop through sessions and create directories
             for ses in ses_list:
                 file_map['func'][subj][ses] = {}
-                self._map_func(subj, ses, dir_func, file_map['func'][subj][ses])
+                file_map['physio'][subj][ses] = {}
+                if self.params['func']['pipeline'] == 'full':
+                    self._map_func_full(
+                        subj, ses, dir_map['func'], file_map['func'][subj][ses]
+                    )
+                elif self.params['func']['pipeline'] == 'cifti-partial':
+                    self._map_func_cifti_partial(
+                        subj, ses, dir_map['func'], file_map['func'][subj][ses]
+                    )
+                if 'physio' in self.params['data']:
+                    self._map_physio(
+                        subj, ses, dir_map['physio'], dir_map['func'], file_map['physio'][subj][ses]
+                    )
 
         return file_map
 
@@ -76,42 +217,45 @@ class FileMapper:
         create output files for anatomical pipeline. Modify in-place
         """
         # raw anatomical
-        file_map_subj['raw'] = self._filepath(
+        file_map_subj[AnatPipeOut.RAW.value] = self._filepath(
             data='anat', subject=subj,
-            basedir=dir_anat['raw']
+            basedir=dir_anat[AnatPipeOut.RAW.value]
         )
+        # freesurfer out dir
+        file_map_subj[AnatPipeOut.FREESURFER.value] = \
+            os.path.abspath(
+                f"{dir_anat[AnatPipeOut.FREESURFER.value]}"
+            )
         # freesurfer subject out dir
-        file_map_subj['freesurfer'] = os.path.abspath(
-            f"{dir_anat['freesurfer']}"
-        )
-        # freesurfer subject out dir
-        file_map_subj['freesurfer_sdir'] = os.path.abspath(
-            f"{dir_anat['freesurfer']}/{subj}"
-        )
+        file_map_subj[AnatPipeOut.FREESURFER_SDIR.value] = \
+            os.path.abspath(
+                f"{dir_anat[AnatPipeOut.FREESURFER.value]}/{subj}"
+            )
+        
         # miscellanous anat outputs
-        file_map_subj['misc'] = {}
+        file_map_subj[AnatPipeOut.MISC.value] = {}
         ## freesurfer brain mask
-        file_map_subj['misc']['fs_brainmask'] = os.path.abspath(
-            f"{file_map_subj['freesurfer_sdir']}/mri/brainmask.mgz"
-        )
+        file_map_subj[AnatPipeOut.MISC.value][AnatPipeOutMisc.FS_BRAINMASK.value] = \
+            os.path.abspath(
+                f"{file_map_subj[AnatPipeOut.FREESURFER_SDIR.value]}/mri/brainmask.mgz"
+            )
         ## freesurfer midthickness
         fslr_fp = utils.get_fp_base(
             self._filepath(
                 data='anat', subject=subj,
-                basedir=dir_anat['fslr']
+                basedir=dir_anat[AnatPipeOut.FSLR.value]
             )
         )
         ### create files for each hemisphere (32k res)
         for hemi, hemi_lr in zip(['lh', 'rh'], ['L', 'R']):
-            file_map_subj['misc'][f'fs_mid_{hemi}'] = \
+            file_map_subj[AnatPipeOut.MISC.value][f'fs_mid_{hemi}'] = \
             f'{fslr_fp}.{hemi}.midthickness.surf.gii'
-            file_map_subj['misc'][f'fslr_mid_{hemi}'] = \
+            file_map_subj[AnatPipeOut.MISC.value][f'fslr_mid_{hemi}'] = \
             f'{fslr_fp}.{hemi_lr}.midthickness.32k_fs_LR.surf.gii'
-            file_map_subj['misc'][f'fs_sphere_{hemi}'] = \
+            file_map_subj[AnatPipeOut.MISC.value][f'fs_sphere_{hemi}'] = \
             f'{fslr_fp}.{hemi}.sphere.reg.surf.gii'
 
-
-    def _map_func(
+    def _map_func_cifti_partial(
         self,
         subj: str,
         ses: str,
@@ -119,121 +263,237 @@ class FileMapper:
         file_map_subj: dict
     ) -> None:
         """
-        create output files for functional pipeline. Modify in-place
+        create output files for partial cifti functional pipeline. Modify in-place
+        """
+        # map raw file
+        file_map_subj[FuncPipeOutCiftiPartial.RAW.value] = self._filepath(
+            data='func', subject=subj, session=ses,
+            basedir=dir_func[FuncPipeOutCiftiPartial.RAW.value], file_ext='dtseries.nii'
+        )
+        # map trimmed file
+        file_map_subj[FuncPipeOutCiftiPartial.TRIM.value] = self._filepath(
+            data='func', subject=subj, session=ses,
+            basedir=dir_func[FuncPipeOutCiftiPartial.TRIM.value], file_ext='dtseries.nii'
+        )
+        # map surface smooth file
+        file_map_subj[FuncPipeOutCiftiPartial.SURFACE_SMOOTH.value] = self._filepath(
+            data='func', subject=subj, session=ses,
+            basedir=dir_func[FuncPipeOutCiftiPartial.SURFACE_SMOOTH.value], file_ext='dtseries.nii'
+        )
+
+    def _map_func_full(
+        self,
+        subj: str,
+        ses: str,
+        dir_func: str,
+        file_map_subj: dict
+    ) -> None:
+        """
+        create output files for full functional pipeline. Modify in-place
         """
         # filepaths for tasks with gifti output
         # map files differently for multi- vs. single-echo datasets
-        for task in ['raw', 'trim', 'slicetime', 'motion']:
+        tasks_start = [
+            FuncPipeOut.RAW.value,
+            FuncPipeOut.TRIM.value,
+            FuncPipeOut.SLICE_TIMING.value,
+            FuncPipeOut.MOTION_CORRECT.value,
+        ]
+        for task in tasks_start:
             file_map_subj[task] = self._filepath(
                 data='func', subject=subj, session=ses,
-                basedir=dir_func[task], return_echos=True
+                basedir=dir_func[task], file_ext='nii.gz',
+                return_echos=True
             )
         # coregistration file handling is same for multi- vs. single-echo
-        for task in ['coregister']:
-            file_map_subj[task] = self._filepath(
-                data='func', subject=subj, session=ses,
-                basedir=dir_func[task]
-            )
+        file_map_subj[FuncPipeOut.BBREGISTER.value] = self._filepath(
+            data='func', subject=subj, session=ses,
+            basedir=dir_func[FuncPipeOut.BBREGISTER.value], file_ext='nii.gz'
+        )
         # separate .gii outputs per hemisphere
-        for task in ['surface_smooth', 'surface_lr']:
+        tasks_surface = [
+            FuncPipeOut.VOL2SURF.value,
+            FuncPipeOut.FSLR_RESAMPLE.value
+        ]
+        for task in tasks_surface:
             file_map_subj[task] = {}
             for hemi in ['lh', 'rh']:
                 file_map_subj[task][hemi] = self._filepath(
                     data='func', subject=subj, session=ses,
-                    basedir=dir_func[task], func_ext='gii',
-                    hemi=hemi
+                    basedir=dir_func[task],
+                    file_ext=f'{hemi}.func.gii',
                 )
 
         # tedana out directory
-        file_map_subj['tedana'] = utils.get_fp_base(
+        file_map_subj[FuncPipeOut.TEDANA.value] = utils.get_fp_base(
             self._filepath(
                 data='func', subject=subj, session=ses,
-                basedir=dir_func['tedana']
+                basedir=dir_func[FuncPipeOut.TEDANA.value], file_ext='nii.gz'
             )
         )
         # miscellanous functional outputs
-        file_map_subj['misc'] = {}
+        file_map_subj[FuncPipeOut.MISC.value] = {}
         ## mcflirt mean volume
-        motion_fp = file_map_subj['motion']
+        motion_fp = file_map_subj[FuncPipeOut.MOTION_CORRECT.value]
         if self.params['multiecho']:
             motion_fp_base = utils.get_fp_base(motion_fp[0])
         else:
             motion_fp_base = utils.get_fp_base(motion_fp)
-        file_map_subj['misc']['mean_vol'] = os.path.abspath(
-            f"{motion_fp_base}_mean_reg.nii.gz"
-        )
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.MEAN_VOL.value] = \
+            os.path.abspath(f"{motion_fp_base}_mean_reg.nii.gz")
         ## mcflirt transform matrix
-        file_map_subj['misc']['mcflirt_mat'] = os.path.abspath(
-            f"{motion_fp_base}.mat"
-        )
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.MCFLIRT_MAT.value] = \
+            os.path.abspath(f"{motion_fp_base}.mat")
+        
         ## coregistration transform matrix
-        coreg_fp = utils.get_fp_base(file_map_subj['coregister'])
-        file_map_subj['misc']['surfregister_mat'] = os.path.abspath(
-            f'{coreg_fp}.lta'
-        )
+        coreg_fp = utils.get_fp_base(file_map_subj[FuncPipeOut.BBREGISTER.value])
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_MAT.value] = \
+            os.path.abspath(f'{coreg_fp}.lta')
         ## coregistration inital FLIRT transform matrix
-        file_map_subj['misc']['surfregister_fslmat'] = os.path.abspath(
-            f'{coreg_fp}.mat'
-        )
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_FSL_MAT.value] = \
+            os.path.abspath(f'{coreg_fp}.mat')
         ## coregistration reg file
-        file_map_subj['misc']['surfregister_reg'] = os.path.abspath(
-            f'{coreg_fp}_mean_reg.nii.gz'
-        )
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_REG.value] = \
+            os.path.abspath(f'{coreg_fp}_mean_reg.nii.gz')
         ## mask file for tedana preprocessing
-        file_map_subj['misc']['fs_func_mask'] = os.path.abspath(
-            f'{coreg_fp}_brainmask.nii.gz'
-        )
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.FS_FUNC_MASK.value] = \
+            os.path.abspath(f'{coreg_fp}_brainmask.nii.gz')
         ## tedana denoised file
-        tedana_out = file_map_subj['tedana']
-        tedana_out_fp = os.path.basename(file_map_subj['tedana'])
-        file_map_subj['misc']['tedana_denoised'] = os.path.abspath(
-            f'{tedana_out}/{tedana_out_fp}_desc-denoised_bold.nii.gz'
-        )
+        tedana_out = file_map_subj[FuncPipeOut.TEDANA.value]
+        tedana_out_fp = os.path.basename(file_map_subj[FuncPipeOut.TEDANA.value])
+        file_map_subj[FuncPipeOut.MISC.value][FuncPipeOutMisc.TEDANA_DENOISED.value] = \
+            os.path.abspath(f'{tedana_out}/{tedana_out_fp}_desc-denoised_bold.nii.gz')
+
+    def _map_physio(
+        self,
+        subj: str,
+        ses: str,
+        dir_physio: str,
+        dir_func: str,
+        file_map_subj: dict
+    ) -> None:
+        """
+        create output files for physio pipeline. Modify in-place
+        """
+        # map raw files
+        file_map_subj[PhysioPipeOut.RAW.value] = {}
+        for p in self.params['physio']['raw']:
+            if p == 'motion':
+                file_map_subj[PhysioPipeOut.RAW.value][p] = self._filepath(
+                    data='physio', subject=subj, session=ses,
+                    basedir=dir_func[FuncPipeOut.MOTION_CORRECT.value], 
+                    physio_type='raw',
+                    physio_str=p,
+                    file_ext=self.params['physio_ext'][p]
+                )
+            else:
+                file_map_subj[PhysioPipeOut.RAW.value][p] = self._filepath(
+                    data='physio', subject=subj, session=ses,
+                    basedir=dir_physio[PhysioPipeOut.RAW.value], 
+                    physio_type='raw',
+                    physio_str=p,
+                    file_ext=self.params['physio_ext'][p]
+                )
+
+        # map physio signals extracted from raw physio files
+        file_map_subj[PhysioPipeOut.SIGNAL.value] = {}
+        for p in self.params['physio']['signals']:
+            file_map_subj[PhysioPipeOut.SIGNAL.value][p] = self._filepath(
+                data='physio', subject=subj, session=ses,
+                basedir=dir_physio[PhysioPipeOut.PROC.value], 
+                physio_type='out',
+                physio_str=p,
+                file_ext='txt'
+            )
+        # map physio signal outputs
+        file_map_subj[PhysioPipeOut.PROC.value] = {}
+        # loop over physio signals
+        for p in self.params['physio']['out']:
+            # loop over physio signal extraction outputs
+            for p_out in self.params['physio']['out'][p]:
+                file_map_subj[PhysioPipeOut.PROC.value][p_out] = self._filepath(
+                    data='physio', subject=subj, session=ses,
+                    basedir=dir_physio[PhysioPipeOut.PROC.value], 
+                    physio_type='out',
+                    physio_str=p_out,
+                    file_ext='txt'
+                )
 
     def _create_directories(self) -> dict:
         """
         create output directories and store
         paths in dictionary
+
+        Returns
+        -------
+        directory_map: dict
+            dictionary of filepaths to output directories
         """
+        # initialize directories
+        directory_map = {}
         # anatomical directory
-        anat_dir = self.params['directory']['anat']
+        if 'anat' in self.params['data']:
+            anat_dir = self.params['directory']['anat']
+            directory_map['anat'] = {
+                AnatPipeOut.RAW.value: f'{anat_dir}/raw',
+                AnatPipeOut.FREESURFER.value: f'{anat_dir}/freesurfer',
+                AnatPipeOut.FSLR.value: f'{anat_dir}/proc1_fslr'
+            }
+            # create directories
+            for d in directory_map['anat']:
+                os.makedirs(directory_map['anat'][d], exist_ok=True)
+
+        # physio directory
+        if 'physio' in self.params['data']:
+            physio_dir = self.params['directory']['physio']
+            directory_map['physio'] = {
+                PhysioPipeOut.RAW.value: f'{physio_dir}/raw',
+                PhysioPipeOut.PROC.value: f'{physio_dir}/proc1_physio'
+            }
+            # create directories
+            for d in directory_map['physio']:
+                os.makedirs(directory_map['physio'][d], exist_ok=True)
+
         # functional directory
         func_dir = self.params['directory']['func']
-        # directory map
-        directory_map = {
-            'anat': {
-                'raw': f'{anat_dir}/raw',
-                'freesurfer': f'{anat_dir}/freesurfer',
-                'fslr': f'{anat_dir}/proc1_fslr'
-            },
-            'func': {
-                'raw': f'{func_dir}/raw',
-                'trim': f'{func_dir}/proc1_trim',
-                'slicetime': f'{func_dir}/proc2_slicetime',
-                'motion': f'{func_dir}/proc3_motion',
-                'coregister': f'{func_dir}/proc4_coregister',
-                'surface_smooth': f'{func_dir}/proc5_surface_smooth',
-                'surface_lr': f'{func_dir}/proc6_surfacelr',
+
+        if self.params['func']['pipeline'] == 'full':
+            directory_map['func'] = {
+                FuncPipeOut.RAW.value: f'{func_dir}/raw',
+                FuncPipeOut.TRIM.value: f'{func_dir}/proc1_trim',
+                FuncPipeOut.SLICE_TIMING.value: f'{func_dir}/proc2_slicetime',
+                FuncPipeOut.MOTION_CORRECT.value: f'{func_dir}/proc3_motion',
+                FuncPipeOut.BBREGISTER.value: f'{func_dir}/proc4_coregister',
+                FuncPipeOut.VOL2SURF.value: f'{func_dir}/proc5_vol2surf',
+                FuncPipeOut.FSLR_RESAMPLE.value: f'{func_dir}/proc6_surfacelr',
             }
-        }
-        # include tedana directory, if multiecho dataset
-        if self.params['multiecho']:
-            directory_map['func']['tedana'] = f'{func_dir}/proc_tedana'
+
+            # include tedana directory, if multiecho dataset
+            if self.params['multiecho']:
+                directory_map['func'][FuncPipeOut.TEDANA.value] = f'{func_dir}/proc_tedana'
+
+        elif self.params['func']['pipeline'] == 'cifti-partial':
+            directory_map['func'] = {
+                FuncPipeOutCiftiPartial.RAW.value: f'{func_dir}/raw',
+                FuncPipeOutCiftiPartial.TRIM.value: f'{func_dir}/proc1_trim',
+                FuncPipeOutCiftiPartial.SURFACE_SMOOTH.value: f'{func_dir}/proc2_surfacesmooth'
+            }
 
         # create directories, if doesn't exist
-        for d in ['anat', 'func']:
-            for p in directory_map[d]:
-                os.makedirs(directory_map[d][p], exist_ok=True)
+        for d in directory_map['func']:
+            os.makedirs(directory_map['func'][d], exist_ok=True)
+
         return directory_map
 
     def _filepath(
         self,
-        data: Literal['func', 'anat', 'eeg', 'physio'],
+        data: Literal['func', 'anat', 'physio'],
         basedir: str,
         subject: str,
-        func_ext: Literal['nii', 'gii'] = 'nii',
-        hemi: Literal['nii', 'gii'] = None,
+        file_ext: utils.FileExtParams = None,
         return_echos: bool = False,
+        physio_str: str = None,
+        physio_type: Literal['raw', 'out'] = None,
         session: str = None,
     ) -> str:
         """
@@ -241,28 +501,34 @@ class FileMapper:
 
         Parameters
         ----------
-        data: Literal['func', 'anat', 'eeg', 'physio']
+        data: Literal['func', 'anat', 'physio']
             Choice of data modality
         basedir: str
             prepend filepath to directory
         subject: str
             subject label
-        func_ext:  Literal['nii', 'gii']
-            whether you want a .nii or .gii extension for the functional
-            file path. Ignored if data modality not 'func' (default: nii)
-        hemi: Literal[rh, lh]
-            left or right hemisphere. Ignored if data modality not 'func'
+        file_ext: utils.FileExtParams,
+            the file extension for the file path (optional)
         return_echos: bool
             whether to return filepaths for individual echos (default: False)
+        physio_str: str
+            physio label (optional)
+        physio_type: Literal['raw', 'out']
+            type of physio file to return (optional)
         session: str
             session label (optional)
+
+        Returns
+        -------
+        fp: str
+            file path
 
         """
         if return_echos:
             fp = [
                 self.iter.to_file(
                     data=data, subject=subject, session=session,
-                    basedir=basedir, echo=e+1, func_ext=func_ext
+                    basedir=basedir, echo=e+1, file_ext='nii.gz'
                 )
                 for e in range(len(self.params['func']['echos']))
             ]
@@ -270,13 +536,29 @@ class FileMapper:
             fp = [os.path.abspath(f) for f in fp]
             if len(fp) < 2:
                 fp = fp[0]
+        elif data == 'physio':
+            if physio_type == 'raw':
+                fp = self.iter.to_file(
+                    data=data, subject=subject, session=session,
+                    basedir=basedir, physio=physio_str, file_ext=file_ext,
+                    physio_type='raw'
+                )
+            elif physio_type == 'out':
+                fp = self.iter.to_file(
+                    data=data, subject=subject, session=session,
+                    basedir=basedir, physio=physio_str, file_ext='txt',
+                    physio_type='out'
+                )
+            # get full path
+            fp = os.path.abspath(fp)
         else:
             fp = self.iter.to_file(
                 data=data, subject=subject, session=session,
-                basedir=basedir, func_ext=func_ext, hemi=hemi
+                basedir=basedir, file_ext=file_ext
             )
             # get full path
             fp = os.path.abspath(fp)
+
         return fp
 
 
@@ -299,6 +581,9 @@ class Pipeline:
     func_skip: bool
         whether to skip functional preprocessing, if already run
         (default = False)
+    physio_skip: bool
+        whether to skip physio preprocessing, if already run
+        (default = False)
     Methods
     -------
 
@@ -311,15 +596,13 @@ class Pipeline:
 
     def __init__(
         self,
-        dataset: Literal['vanderbilt'],
+        dataset: Literal['vanderbilt', 'newcastle'],
         anat_skip: bool = False,
         func_skip: bool = False,
-        reconall_skip: bool = False
+        reconall_skip: bool = False,
+        physio_skip: bool = False
     ):
         self.dataset = dataset
-        self.anat_skip = anat_skip
-        self.func_skip = func_skip
-        self.reconall_skip = reconall_skip
         # dataset specific parameters
         with open('scan/meta/params.json', 'rb') as f:
             self.params = json.load(f)[dataset]
@@ -333,27 +616,76 @@ class Pipeline:
         self.file_iter = FileMapper(dataset, self.params)
         self.file_map = self.file_iter.map()
 
+        # set skip flags
+        # check if anat is available
+        if 'anat' in self.params['data']:
+            self.anat_skip = anat_skip
+        else:
+            print(f'{self.dataset} does not have anatomical data, skipping')
+            self.anat_skip = True
+        # check if func is available
+        if 'func' in self.params['data']:
+            self.func_skip = func_skip
+        else:
+            print(f'{self.dataset} does not have functional data, skipping')
+            self.func_skip = True
+        # check if physio is available
+        if 'physio' in self.params['data']:
+            self.physio_skip = physio_skip
+        else:
+            print(f'{self.dataset} does not have physiological data, skipping')
+            self.physio_skip = True
+        
+        # set reconall skip flag
+        if self.anat_skip:
+            self.reconall_skip = True
+        else:
+            self.reconall_skip = reconall_skip
+        
+        # set func type
+        self.func_pipe_type = self.params['func']['pipeline']
+
     def run(self) -> None:
         """
         Execute full preprocessing pipeline sequentially over all subjects
         """
         # loop through subjects then sessions
         for subj, ses_list in self.file_iter.iter.subject_by_session():
-            # initialized and execute anatomical pipeline
-            anat_proc = AnatomicalPipeline(
-                subj=subj, params=self.params, fmap=self.file_map,
-                reconall_skip=self.reconall_skip
-            )
             if not self.anat_skip:
-                anat_proc.run()
-            # loop through sessions and preprocess functionals
-            for ses in ses_list:
-                func_proc = FunctionalPipeline(
-                    subj=subj, ses=ses, params=self.params,
-                    fmap=self.file_map
+                # initialized and execute anatomical pipeline
+                anat_proc = AnatomicalPipeline(
+                    subj=subj, params=self.params, fmap=self.file_map,
+                    reconall_skip=self.reconall_skip
                 )
+                anat_proc.run()
+            # loop through sessions and preprocess functionals and physio
+            for ses in ses_list:
                 if not self.func_skip:
+                    if self.func_pipe_type == 'full':
+                        # preprocess functional
+                        func_proc = FunctionalPipelineFull(
+                            subj=subj, ses=ses, params=self.params,
+                            fmap=self.file_map
+                        )
+                    elif self.func_pipe_type == 'cifti-partial':
+                        func_proc = FunctionalPipelineCiftiPartial(
+                            subj=subj, ses=ses, params=self.params,
+                            fmap=self.file_map
+                        )
+                    else:
+                        raise ValueError(
+                            f'{self.func_pipe_type} is not a valid function pipeline type'
+                        )
+                    # preprocess functional
                     func_proc.run()
+
+                # preprocess physio
+                if not self.physio_skip:
+                    physio_proc = PhysioPipeline(
+                        dataset=self.dataset, subj=subj, ses=ses,
+                        params=self.params, fmap=self.file_map
+                    )
+                    physio_proc.run()
 
     def run_parallel(self, n_cores: int = 4) -> None:
         """
@@ -367,6 +699,7 @@ class Pipeline:
         # loop through subjects then sessions
         anat_proc_params = []
         func_proc_params = []
+        physio_proc_params = []
         for subj, ses_list in self.file_iter.iter.subject_by_session():
             # initialized and execute anatomical pipeline
             anat_p = {
@@ -376,8 +709,9 @@ class Pipeline:
                 'reconall_skip': self.reconall_skip
             }
             anat_proc_params.append(anat_p)
-            # loop through sessions and preprocess functionals
+            # loop through sessions and preprocess functionals and physio
             for ses in ses_list:
+                # functional parameters
                 func_p = {
                     'subj': subj,
                     'ses': ses,
@@ -385,6 +719,16 @@ class Pipeline:
                     'fmap': self.file_map
                 }
                 func_proc_params.append(func_p)
+                # physio parameters
+                physio_p = {
+                    'dataset': self.dataset,
+                    'subj': subj,
+                    'ses': ses,
+                    'params': self.params,
+                    'fmap': self.file_map
+                }
+                physio_proc_params.append(physio_p)
+
 
         # parallel execution
         # define preproc execution function
@@ -396,10 +740,14 @@ class Pipeline:
         # execute functional pipeline
         if not self.func_skip:
             with Pool(n_cores) as pool:
-                pool.map(_par_execute_func, func_proc_params)
+                # Create a list of tuples with (params, func_pipe_type) for each process
+                func_args = [(params, self.func_pipe_type) for params in func_proc_params]
+                pool.starmap(_par_execute_func, func_args)
 
-
-
+        # execute physio pipeline
+        if not self.physio_skip:
+            with Pool(n_cores) as pool:
+                pool.map(_par_execute_physio, physio_proc_params)
 
 
 class AnatomicalPipeline:
@@ -447,31 +795,34 @@ class AnatomicalPipeline:
         # freesurfer recon-all
         if not self.reconall_skip:
             fs.recon_all(
-                t1 = self.fmap['anat'][self.subj]['raw'],
+                t1 = self.fmap['anat'][self.subj][AnatPipeOut.RAW.value],
                 subj_label = self.subj,
-                dir_out = self.fmap['anat'][self.subj]['freesurfer']
+                dir_out = self.fmap['anat'][self.subj][AnatPipeOut.FREESURFER.value]
             )
         # create midthickness files for left and right hemispheres
         for hemi in ['lh', 'rh']:
             wb.create_midthickness(
                 hemi = hemi,
-                fs_mid = self.fmap['anat'][self.subj]['misc'][f'fs_mid_{hemi}'],
-                lr_mid = self.fmap['anat'][self.subj]['misc'][f'fslr_mid_{hemi}'],
-                sphere_out = self.fmap['anat'][self.subj]['misc'][f'fs_sphere_{hemi}'],
-                fs_subj_dir = self.fmap['anat'][self.subj]['freesurfer_sdir']
+                fs_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_mid_{hemi}'],
+                lr_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fslr_mid_{hemi}'],
+                sphere_out = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_sphere_{hemi}'],
+                fs_subj_dir = self.fmap['anat'][self.subj][AnatPipeOut.FREESURFER_SDIR.value]
             )
 
 
-class FunctionalPipeline:
+class FunctionalPipelineFull:
     """
-    Functional preprocessing pipeline for a single scan.
+    Full functional preprocessing pipeline for a single scan. Process raw nifti
+    file to surface-smoothed, fsLR-resampled file.
+
     Steps:
-        1. Head motion correction (mcflirt)
-        2. Coregistration of mean functional volume to T1w (bbregister)
-        3. Slice-timing correction
-        4. If multiecho, tedana preprocessing
-        5. Volume-to-surface sampling (SampleToSurface; mri_vol2surf)
-        6. Surface smoothing
+        1. Trimming
+        2. Slice-timing correction
+        3. Head motion correction (mcflirt)
+        4. Coregistration of mean functional volume to T1w (bbregister)
+        5. If multiecho, tedana preprocessing
+        6. Volume-to-surface sampling and smoothing (mri_vol2surf)
+        7. Resampling to fsLR space (wb_command -metric-resample)
 
     Attributes
     ----------
@@ -484,6 +835,11 @@ class FunctionalPipeline:
         preprocessing parameters from scan/meta/params.json
     fmap: dict
         dictionary containing output file paths
+
+    Methods
+    -------
+    run():
+        Execute functional preprocessing pipeline
 
     """
     def __init__(
@@ -503,38 +859,36 @@ class FunctionalPipeline:
         # check whether multiecho dataset
         self.multiecho = params['multiecho']
 
-
-
-    def run(self):
+    def run(self) -> None:
         """
         Execute functional preprocessing pipeline
         """
         # trim first N volumes
         if self.multiecho:
             fsl.trim_vol_multiecho(
-                fps=self.fmap['func'][self.subj][self.ses]['raw'],
-                fps_out=self.fmap['func'][self.subj][self.ses]['trim'],
+                fps=self.fmap['func'][self.subj][self.ses][FuncPipeOut.RAW.value],
+                fps_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.TRIM.value],
                 n_trim=self.func_params['trim']
             )
         else:
             fsl.trim_vol(
-                fp=self.fmap['func'][self.subj][self.ses]['raw'],
-                fp_out=self.fmap['func'][self.subj][self.ses]['trim'],
+                fp=self.fmap['func'][self.subj][self.ses][FuncPipeOut.RAW.value],
+                fp_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.TRIM.value],
                 n_trim=self.func_params['trim']
             )
 
         # slicetiming correction w/ FSL slicetimer
         if self.multiecho:
             fsl.slicetime_multiecho(
-                fps=self.fmap['func'][self.subj][self.ses]['trim'],
-                fps_out=self.fmap['func'][self.subj][self.ses]['slicetime'],
+                fps=self.fmap['func'][self.subj][self.ses][FuncPipeOut.TRIM.value],
+                fps_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.SLICE_TIMING.value],
                 slice_order=self.func_params['sliceorder'],
                 tr = self.func_params['tr']
             )
         else:
             fsl.slicetime(
-                fp=self.fmap['func'][self.subj][self.ses]['trim'],
-                fp_out=self.fmap['func'][self.subj][self.ses]['slicetime'],
+                fp=self.fmap['func'][self.subj][self.ses][FuncPipeOut.TRIM.value],
+                fp_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.SLICE_TIMING.value],
                 slice_order=self.func_params['sliceorder'],
                 tr = self.func_params['tr']
             )
@@ -542,82 +896,439 @@ class FunctionalPipeline:
         # motion correction with FSL MCLFIRT
         if self.multiecho:
             fsl.mcflirt_multiecho(
-                fps=self.fmap['func'][self.subj][self.ses]['slicetime'],
-                fps_out=self.fmap['func'][self.subj][self.ses]['motion'],
-                fp_meanvol=self.fmap['func'][self.subj][self.ses]['misc']['mean_vol'],
-                fp_mat=self.fmap['func'][self.subj][self.ses]['misc']['mcflirt_mat']
+                fps=self.fmap['func'][self.subj][self.ses][FuncPipeOut.SLICE_TIMING.value],
+                fps_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.MOTION_CORRECT.value],
+                fp_meanvol=self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.MEAN_VOL.value],
+                fp_mat=self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.MCFLIRT_MAT.value]
             )
         else:
             fsl.mcflirt(
-                fp=self.fmap['func'][self.subj][self.ses]['slicetime'],
-                fp_out=self.fmap['func'][self.subj][self.ses]['motion']
+                fp=self.fmap['func'][self.subj][self.ses][FuncPipeOut.SLICE_TIMING.value],
+                fp_out=self.fmap['func'][self.subj][self.ses][FuncPipeOut.MOTION_CORRECT.value]
             )
 
         # coregistration of mean functional to T1w with Freesurfer BBRegister
         fs.surf_register(
-            fp_reg_out = self.fmap['func'][self.subj][self.ses]['misc']['surfregister_reg'],
-            fp_mat_out = self.fmap['func'][self.subj][self.ses]['misc']['surfregister_mat'],
-            fp_fslmat_out = self.fmap['func'][self.subj][self.ses]['misc']['surfregister_fslmat'],
-            func_mean = self.fmap['func'][self.subj][self.ses]['misc']['mean_vol'],
+            fp_reg_out = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_REG.value],
+            fp_mat_out = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_MAT.value],
+            fp_fslmat_out = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_FSL_MAT.value],
+            func_mean = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.MEAN_VOL.value],
             subj=self.subj,
-            subjects_dir=self.fmap['anat'][self.subj]['freesurfer']
+            subjects_dir=self.fmap['anat'][self.subj][AnatPipeOut.FREESURFER.value]
         )
 
         # if multiecho, run tedana pipeline
         if self.multiecho:
             # create binary brain mask from Freesurfer in functional space
             fs.mask_to_func(
-                mask = self.fmap['anat'][self.subj]['misc']['fs_brainmask'],
-                func_mean = self.fmap['func'][self.subj][self.ses]['misc']['mean_vol'],
-                mask_out = self.fmap['func'][self.subj][self.ses]['misc']['fs_func_mask'],
-                mat_lta = self.fmap['func'][self.subj][self.ses]['misc']['surfregister_mat']
+                mask = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][AnatPipeOutMisc.FS_BRAINMASK.value],
+                func_mean = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.MEAN_VOL.value],
+                mask_out = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.FS_FUNC_MASK.value],
+                mat_lta = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_MAT.value]
             )
             # run tedana workflow
             tedana_prefix = os.path.basename(
-                self.fmap['func'][self.subj][self.ses]['tedana']
+                self.fmap['func'][self.subj][self.ses][FuncPipeOut.TEDANA.value]
             )
             tedana_denoise(
-                fps_in = self.fmap['func'][self.subj][self.ses]['motion'],
+                fps_in = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MOTION_CORRECT.value],
                 echo_times = self.func_params['echos'],
-                mask = self.fmap['func'][self.subj][self.ses]['misc']['fs_func_mask'],
-                out_dir = self.fmap['func'][self.subj][self.ses]['tedana'],
+                mask = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.FS_FUNC_MASK.value],
+                out_dir = self.fmap['func'][self.subj][self.ses][FuncPipeOut.TEDANA.value],
                 out_prefix = tedana_prefix
             )
-            fp_vol2surf = self.fmap['func'][self.subj][self.ses]['misc']['tedana_denoised']
+            fp_vol2surf = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.TEDANA_DENOISED.value]
         else:
-            fp_vol2surf = self.fmap['func'][self.subj][self.ses]['motion']
+            fp_vol2surf = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MOTION_CORRECT.value]
 
         # from here on, we process separate hemispheres (lh, rh)
         for hemi in ['lh', 'rh']:
             # from volume to native (subject) surface with Freesurfer
-            # mri_vol2surf
+            # mri_vol2surf, additionaly performs surface-smoothing
             fs.vol2surf(
                 hemi = hemi,
                 smooth_fwhm = self.func_params['smooth_fwhm'],
                 fp_in = fp_vol2surf,
-                fp_out =self.fmap['func'][self.subj][self.ses]['surface_smooth'][hemi],
+                fp_out =self.fmap['func'][self.subj][self.ses][FuncPipeOut.VOL2SURF.value][hemi],
                 subj=self.subj,
-                subjects_dir=self.fmap['anat'][self.subj]['freesurfer'],
-                fp_reg_mat = self.fmap['func'][self.subj][self.ses]['misc']['surfregister_mat']
+                subjects_dir=self.fmap['anat'][self.subj][AnatPipeOut.FREESURFER.value],
+                fp_reg_mat = self.fmap['func'][self.subj][self.ses][FuncPipeOut.MISC.value][FuncPipeOutMisc.SURFREGISTER_MAT.value]
             )
             # freesurfer native surface to fs_LR surface with
             # workbench metric-resample
             wb.fs2fslr(
                 hemi = hemi,
-                fp_in = self.fmap['func'][self.subj][self.ses]['surface_smooth'][hemi],
-                fp_out =self.fmap['func'][self.subj][self.ses]['surface_lr'][hemi],
-                fs_mid = self.fmap['anat'][self.subj]['misc'][f'fs_mid_{hemi}'],
-                lr_mid = self.fmap['anat'][self.subj]['misc'][f'fslr_mid_{hemi}'],
-                fs_sphere = self.fmap['anat'][self.subj]['misc'][f'fs_sphere_{hemi}'],
-                fs_subj_dir = self.fmap['anat'][self.subj]['freesurfer_sdir']
-
+                fp_in = self.fmap['func'][self.subj][self.ses][FuncPipeOut.VOL2SURF.value][hemi],
+                fp_out =self.fmap['func'][self.subj][self.ses][FuncPipeOut.FSLR_RESAMPLE.value][hemi],
+                fs_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_mid_{hemi}'],
+                lr_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fslr_mid_{hemi}'],
+                fs_sphere = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_sphere_{hemi}'],
+                fs_subj_dir = self.fmap['anat'][self.subj][AnatPipeOut.FREESURFER_SDIR.value]
             )
+        
+
+class FunctionalPipelineCiftiPartial:
+    """
+    Partial functional preprocessing pipeline for an fMRIPrep preprocessed CIFTI scan.
+    Process CIFTI image with trimming and surfaces-smoothing.
+
+    Steps:
+        1. Trimming
+        2. Surface smoothing (wb_command -cifti-smoothing)
+
+    Attributes
+    ----------
+    subj: str
+        subject label
+    ses: str
+        session label
+    params: dict
+        dictionary containing dataset specific
+        preprocessing parameters from scan/meta/params.json
+    fmap: dict
+        dictionary containing output file paths
+
+    Methods
+    -------
+    run():
+        Execute cifti-partial functional preprocessing pipeline
+
+    """
+    def __init__(
+        self,
+        subj: str,
+        ses: str,
+        params: dict,
+        fmap: dict,
+    ):
+        self.subj = subj
+        self.ses = ses
+        self.fmap = fmap
+        # get directory paths
+        self.func_dir = params['directory']['func']
+        # get functional preprocessing params
+        self.func_params = params['func']
+
+    def run(self) -> None:
+        """
+        Execute cifti-partial functional preprocessing pipeline
+        """
+        # trim first N volumes
+        trim_cifti(
+            fp=self.fmap['func'][self.subj][self.ses][FuncPipeOutCiftiPartial.RAW.value],
+            fp_out=self.fmap['func'][self.subj][self.ses][FuncPipeOutCiftiPartial.TRIM.value],
+            n_trim=self.func_params['trim']
+        )
+        # surface smoothing
+        wb.cifti_smooth(
+            fp_in = self.fmap['func'][self.subj][self.ses][FuncPipeOutCiftiPartial.TRIM.value],
+            fp_out = self.fmap['func'][self.subj][self.ses][FuncPipeOutCiftiPartial.SURFACE_SMOOTH.value],
+            fwhm = self.func_params['smooth_fwhm']
+        )
 
 
-def _par_execute_func(params: str) -> None:
-    # execution of functional pipeline for run_parallel()
-    func_proc = FunctionalPipeline(**params)
-    func_proc.run()
+class PhysioPipeline:
+    """
+    Physio (including EEG) preprocessing pipeline for a single scan.
+
+    Steps of the preprocessing depend on the dataset and the physio
+    signals recorded, but in general:
+
+    1. Load physio signals (and EEG) - dataset-specific
+    2. Extract physio signal features - e.g. respiratory amplitude
+    3. Trim physio signals to match trimming of functional volumes
+    4. Detrending (polynomial order 2 - quadratic) - except for eeg_vigilance
+    5. Low-pass filter (<0.25 Hz)
+    6. Interpolation to functional MRI volumes
+
+    Attributes
+    ----------
+    dataset: str
+        dataset label. Some aspects of physio preprocessing are
+        dataset specific.
+    subj: str
+        subject label
+    ses: str
+        session label
+    params: dict
+        dictionary containing dataset specific
+        preprocessing parameters from scan/meta/params.json
+    fmap: dict
+        dictionary containing output file paths
+    plot_physio: bool
+        whether to save plot of raw physio signals for QC (before
+        preprocessing)
+
+    Methods
+    -------
+    run():
+        Execute physio preprocessing pipeline
+    """
+    def __init__(
+        self,
+        dataset: str,
+        subj: str,
+        ses: str,
+        params: dict,
+        fmap: dict,
+        plot_physio: bool = True
+    ):
+        self.dataset = dataset
+        self.subj = subj
+        self.ses = ses
+        self.params = params
+        self.fmap = fmap
+        self.plot_physio = plot_physio
+        # calculate # of secs to trim off physio to match functional mri trim
+        self.trim = params['func']['tr'] * params['func']['trim']
+        # calculate interpolation time points to sample physio to functional
+        self.func_t = self._calc_frame_times()
+        # create physio function mapping
+        self.physio_func_map = physio_func_map(
+            self.params['physio']['signals']
+        )
+
+    def run(self) -> None:
+        """
+        Execute physio preprocessing pipeline
+        """
+        # load physio
+        signals, sf = self._load_physio()
+        # perform physio preprocessing
+        for p in self.params['physio']['signals']:
+            # extract physio signal features from raw physio signals
+            signals_extract = self._physio_extract(signals[p], sf[p], p)
+            # account for trimming of functional volumes
+            trim_n = int(sf[p] * self.trim)
+            # loop over extracted physio signal features
+            for physio_out, signal in signals_extract.items():
+                signal_trim = signal[trim_n:]
+                # detrend and resample to functional
+                if physio_out == 'weight':
+                # if sample weights, use nearest-neighbour interpolation
+                    interp_method = 'nearest'
+                else:
+                    interp_method = 'cubic'
+                    # quadratic detrend
+                    # skip detrending for eeg vigilance signal
+                    # TODO: should handle this in params.json
+                    if physio_out != 'eeg_vigilance':
+                        signal_trim = nk.signal_detrend(
+                            signal_trim, method='polynomial', order=2
+                        )
+                # resample physio
+                signal_resamp = self._resample_physio(
+                    signal_trim, sf[p], interp_method=interp_method
+                )
+                # save out physio in .txt format
+                np.savetxt(
+                    self.fmap['physio'][self.subj][self.ses]['proc'][physio_out],
+                    signal_resamp
+                )
+
+    def _calc_frame_times(self) -> np.ndarray:
+        """
+        Calculate interpolation time points from physio to functional samples.
+        FSL slicetimer aligns all functional slices to the middle of the
+        TR (0.5 * TR), so time points should be selected with this in mind.
+
+        Returns
+        -------
+        frame_times: np.ndarray
+            time points (from the start of the functional scan) of preprocessed
+            functional volumes to interpolate physio signals to
+
+        """
+        # get functional TR
+        func_tr = self.params['func']['tr']
+        # load preprocessed functional scan to get number of volumes
+        if self.params['func']['pipeline'] == 'full':
+            gii_lh = nb.load(
+                self.fmap['func'][self.subj][self.ses]['surface_lr']['lh']
+            )
+            func_len = len(gii_lh.darrays)
+        elif self.params['func']['pipeline'] == 'cifti-partial':
+            cifti = nb.load(
+                self.fmap['func'][self.subj][self.ses]['surface_smooth']
+            )
+            # get number of volumes (assumes time is the first dimension)
+            func_len = cifti.shape[0]
+        # calculate interpolation time points
+        frame_times =  func_tr * (np.arange(func_len) + 0.5)
+        # round to two decimal points
+        frame_times = np.round(frame_times, 2)
+        return frame_times
+
+    def _load_physio(self) -> Tuple[dict[str, pd.Series], dict[str, float]]:
+        """
+        load physio signals (dataset-specific)
+
+        Returns
+        -------
+        signals: dict[str, pd.Series]
+            physio signals
+        sf: dict[str, float]
+            sampling frequency of physio signals
+        """
+        # get physio loader
+        if self.dataset == 'vanderbilt':
+            signals, sf = ds.load_physio_vanderbilt(
+                physio_fp=self.fmap['physio'][self.subj][self.ses]['raw']['physio'],
+                eeg_fp=self.fmap['physio'][self.subj][self.ses]['raw']['eeg']
+            )
+        elif self.dataset == 'newcastle':
+            signals, sf = ds.load_physio_newcastle(
+                physio_fp=self.fmap['physio'][self.subj][self.ses]['raw']['physio'],
+                blink_fp=self.fmap['physio'][self.subj][self.ses]['raw']['blink'],
+                saccade_fp=self.fmap['physio'][self.subj][self.ses]['raw']['saccade']
+            )
+        # if motion signals are present, load fsl motion parameters
+        if 'motion' in self.params['physio']['signals']:
+            signals['motion'] = ds.load_fsl_motion_params(
+                fp=self.fmap['physio'][self.subj][self.ses]['raw']['motion']
+            )
+            sf['motion'] = 1/self.params['func']['tr']
+        # check physio signals and signal names in params match
+        for p in self.params['physio']['signals']:
+            if p not in signals:
+                raise ValueError(f"""
+                    {p} is specified in params.json but was not loaded in
+                    physio preprocessing pipeline
+                """)
+            # if plot_physio is True, save figure
+            if self.plot_physio:
+                fp_raw_base = os.path.splitext(
+                    self.fmap['physio'][self.subj][self.ses]['signal'][p]
+                )[0]
+                fp = f'{fp_raw_base}.png'
+                fig, ax = plt.subplots(figsize=(15,5))
+                if p == 'motion':
+                    for motion_param in signals[p]:
+                        signal_t = np.arange(len(signals[p][motion_param]))*(1/sf[p])
+                        ax.plot(signal_t, signals[p][motion_param], label=motion_param)
+                else:
+                    signal_t = np.arange(len(signals[p]))*(1/sf[p])
+                    ax.plot(signal_t, signals[p], label=p)
+                ax.legend()
+                plt.savefig(fp)
+                plt.close()
+
+        return signals, sf
+
+    def _physio_extract(
+        self,
+        signal: np.ndarray,
+        sf: float,
+        physio_str: str
+    ) -> dict[str, np.ndarray]:
+        """
+        Perform physio preprocessing
+
+        Parameters
+        ----------
+        signal: np.ndarray
+            physio signals
+        sf: float
+            sampling frequency of physio signal
+        physio_str:
+            physio label
+
+        Returns
+        -------
+        signal_extract: dict[str, np.ndarray]
+            preprocessed physio signals (key = physio label)
+        """
+        # get physio preproc func and output mapping from dict
+        physio_func_info = self.physio_func_map[physio_str]
+        # extract physio signal(s)
+        signal_extract = physio_func_info['func'](signal, sf)
+        
+        # map extracted signals to output labels
+        signal_extract_out = {}
+        for physio_out in self.params['physio']['out'][physio_str]:
+            # find the internal key that maps to this output label
+            for internal_key, output_label in physio_func_info['output_map'].items():
+                if output_label == physio_out:
+                    signal_extract_out[physio_out] = signal_extract[internal_key]
+                    break
+        return signal_extract_out
+
+    def _resample_physio(
+        self,
+        signal: np.ndarray,
+        sf: float,
+        interp_method: Literal['cubic', 'nearest'] = 'cubic'
+    ) -> np.ndarray:
+        """
+        Resample preprocessed physio signals to functional scan volumes.
+        For physio recordings, signals are first low-pass filtered (< 0.5 Hz)
+        and then interpolated (cubic) to functional volume samples using
+        self.sample_times attribute. If sample weights (set interp_method as
+        'nearest') signals are nearest-neighbour resampled (no filtering).
+
+        Parameters
+        ----------
+        signal: np.ndarray
+            physio signals
+        sf: float
+            sampling frequency of physio signal
+        interp_method
+            interpolation method for interpolating physio data to functional
+            volume samples - use 'nearest' for weights resampling. Otherwise, 'cubic'.
+
+        Returns
+        -------
+        signal_resamp: np.ndarray
+            physio signal resampled to functional volumes
+        """
+        # dont filter sample weights
+        if interp_method == 'cubic':
+            signal_filt = nk.signal_filter(
+                signal, sampling_rate=sf, highcut=0.20, order=5
+            )
+        elif interp_method == 'nearest':
+            signal_filt = signal
+        else:
+            raise ValueError('interp method must be cubic or nearest')
+        signal_t = np.arange(len(signal_filt))*(1/sf)
+        signal_resamp = nk.signal_interpolate(
+            x_values=signal_t, 
+            y_values=signal_filt,
+            x_new=self.func_t, 
+            method=interp_method
+        )
+        return signal_resamp
+
+
+def tedana_denoise(
+    fps_in: str,
+    echo_times: List[float],
+    mask: str,
+    out_dir: str,
+    out_prefix: str,
+):
+    """
+    Run tedana workflow - Multi-Echo ICA denoising
+
+    Parameters
+    ----------
+        fps_in: str
+            lists of filepaths to each echo in order
+        echo_times: List[float]
+            echo times in order
+        mask: str
+            file path to freesurfer binary brain mask in functional space
+        out_dir: str
+            output directory
+        out_prefix: str
+            file name prefix for all tedana outputs
+    """
+    # run tedana workflow
+    tedana_workflow(
+        data=fps_in, tes=echo_times, mask=mask,
+        prefix=out_prefix, out_dir=out_dir,
+        overwrite=True
+    )
 
 
 def _par_execute_anat(params: str) -> None:
@@ -626,12 +1337,19 @@ def _par_execute_anat(params: str) -> None:
     anat_proc.run()
 
 
+def _par_execute_func(params: str, func_pipe_type: str) -> None:
+    # execution of functional pipeline for run_parallel()
+    if func_pipe_type == 'full':
+        func_proc = FunctionalPipelineFull(**params)
+    elif func_pipe_type == 'cifti-partial':
+        func_proc = FunctionalPipelineCiftiPartial(**params)
+    else:
+        raise ValueError(f'{func_pipe_type} is not a valid function pipeline type')
+    func_proc.run()
 
 
-
-
-
-
-
-
+def _par_execute_physio(params: str) -> None:
+    # execution of physio pipeline for run_parallel()
+    physio_proc = PhysioPipeline(**params)
+    physio_proc.run()
 

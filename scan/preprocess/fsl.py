@@ -5,6 +5,8 @@ import os
 from typing import List
 
 import nibabel as nb
+import numpy as np
+
 from nipype.interfaces import fsl
 
 from scan import utils
@@ -28,14 +30,58 @@ def bet(fp: str, fp_out: str, frac: float = None) -> None:
     fslbet.run()
 
 
+def load_fsl_motion_params(fp: str) -> dict[str, np.ndarray]:
+    """
+    Load motion parameters from .par motion file output by FSL
+    McFlirt motion correction.
+
+    Parameters
+    ----------
+        fp: filepath to motion file
+
+    Returns
+    -------
+        dict of np.ndarray motion parameters: 
+            {
+                'pitch': np.ndarray,
+                'roll': np.ndarray,
+                'yaw': np.ndarray,
+                'trans_x': np.ndarray,
+                'trans_y': np.ndarray,
+                'trans_z': np.ndarray
+            }
+
+    FSL saves motion parameters in the following order:
+        rx  Pitch               (rad)
+        ry  Roll                (rad)
+        rz  Yaw                 (rad)
+        x   Right-Left          (mm)
+        y   Anterior-Posterior  (mm)
+        z   Superior-Inferior   (mm)
+
+    """
+    motion = np.loadtxt(fp)
+    motion_params = {
+        'pitch': motion[:, 0],
+        'roll': motion[:, 1],
+        'yaw': motion[:, 2],
+        'trans_x': motion[:, 3],
+        'trans_y': motion[:, 4],
+        'trans_z': motion[:, 5]
+    }
+    return motion_params
+
+
 def mcflirt(fp: str, fp_out: str) -> None:
     """
     McFLIRT Motion Correction
+
     Parameters
     ----------
-        fp_mean_vol: str
+        fp: str
+            filepath to functional volume
+        fp_out: str
             output file path for functional mean volume
-
 
     """
     fslmcflirt = fsl.MCFLIRT(mean_vol=True, save_plots=True)
@@ -44,6 +90,7 @@ def mcflirt(fp: str, fp_out: str) -> None:
     fslmcflirt.inputs.in_file = fp
     fslmcflirt.inputs.out_file = fp_out_base
     fslmcflirt.inputs.save_mats = True
+    fslmcflirt.inputs.save_plots = True
     # Mcflirt raises FileNotFoundError after successful completion, ignore
     try:
         fslmcflirt.run()
