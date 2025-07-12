@@ -222,7 +222,7 @@ class DistributedLagModel:
         )
         return self
 
-    def predict(
+    def evaluate(
         self,
         lag_max: float = None,
         lag_min: float = None,
@@ -230,7 +230,7 @@ class DistributedLagModel:
         pred_val: float = 1.0
     ) -> DistributedLagModelPredResults:
         """
-        Get predicted functional time course at lags of the physio signal.
+        Evaluate the model at user-specified lags and values of the physio signal.
 
         Parameters
         ----------
@@ -291,232 +291,29 @@ class DistributedLagModel:
             }
         )
         return dlm_pred
-
-
-class DistributedLagNonLinearModel:
-    """
-    Distributed lag non-linear model that forms a tensor product basis over both
-    the predictor variable and lag dimensions. This allows modeling non-linear
-    relationships in both dimensions simultaneously.
     
-    Parameters
-    ----------
-    nlags : int
-        Number of lags (shifts) of the physio signal in the forward direction
-    neg_nlags : int
-        Number of lags (shifts) of the physio signal in the negative direction.
-        Must be a negative integer. This allows modeling the association between
-        functional and physio signals where the functional leads the physio signal.
-    n_knots_lag : int
-        Number of knots in the spline basis across temporal lags
-    n_knots_var : int
-        Number of knots in the spline basis across the predictor variable
-    knots_lag : list[int]
-        Locations of knots in the spline basis across temporal lags. If provided,
-        the n_knots_lag parameter is ignored.
-    knots_var : list[int]
-        Locations of knots in the spline basis across the predictor variable. If provided,
-        the n_knots_var parameter is ignored.
-    basis_var : Literal['cr','bs']
-        basis type for the spline basis across the predictor variable. 'cr' for natural spline, 'bs' for B-spline.
-    basis_lag : Literal['cr','bs']
-        basis type for the spline basis across temporal lags. 'cr' for natural spline, 'bs' for B-spline.
-    alpha : float
-        Regularization strength of the Ridge regression [0, inf] (default: 0.01)
-    """
-    def __init__(
-        self,
-        nlags: int,
-        neg_nlags: int = 0,
-        n_knots_lag: int = 5,
-        n_knots_var: int = 5,
-        knots_lag: List[int] = None,
-        knots_var: List[int] = None,
-        basis_var: Literal['cr','bs'] = 'bs',
-        basis_lag: Literal['cr','bs'] = 'bs',
-        alpha: float = 0.01,
-    ):
-        self.nlags = nlags
-        if neg_nlags > 0:
-            raise ValueError("neg_nlags must be a negative integer")
-        self.neg_nlags = neg_nlags
-
-        # get knots parameters
-        self.n_knots_lag = n_knots_lag
-        self.n_knots_var = n_knots_var
-        self.knots_lag = knots_lag
-        self.knots_var = knots_var
-        # specify basis types
-        self.basis_lag_type = basis_lag
-        self.basis_var_type = basis_var
-        # set regularization strength
-        self.alpha = alpha
-
-    def fit(self, X: np.ndarray, Y: np.ndarray, weights: np.ndarray = None) -> None:
+    def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        Fit regression model using tensor product basis over both predictor
-        and lag dimensions.
-        
-        Parameters
-        ----------
-        X : np.ndarray
-            The physio time course with shape (n_timepoints, 1)
-        Y : np.ndarray
-            Functional MRI time courses with shape (n_timepoints, n_vertices)
-        weights : np.ndarray
-            Weights for each time point. If None, all weights are set to 1.
-        """
-        # Create basis for predictor variable
-        if self.knots_var is not None:
-            self.var_basis = dmatrix(
-                f'{self.basis_var_type}(x, knots=self.knots_var) - 1',
-                {'x': X}
-            )
-        else:
-            self.var_basis = dmatrix(
-                f'{self.basis_var_type}(x, df=self.n_knots_var) - 1',
-                {'x': X}
-            )
-
-        # Create basis for lags using BSplineLagBasis
-        self.lag_basis = BSplineLagBasis(
-            nlags=self.nlags,
-            neg_nlags=self.neg_nlags,
-            n_knots=self.n_knots_lag,
-            knots=self.knots_lag,
-            basis=self.basis_lag_type
-        )
-        self.lag_basis.fit(X)
-        lag_basis = self.lag_basis.basis
-
-        # Create tensor product basis
-        self.tensor_basis, self.nan_mask = self._create_tensor_basis(
-            self.var_basis, lag_basis
-        )
-
-        # if weights is None, set to ones
-        if weights is None:
-            weights = np.ones(X.shape[0])
-
-        # Fit Ridge regression
-        self.glm = Ridge(alpha=self.alpha, fit_intercept=False)
-        self.glm.fit(self.tensor_basis[~self.nan_mask], Y[~self.nan_mask])
-        
-        return self
-
-    def _create_tensor_basis(
-        self, 
-        var_basis: np.ndarray, 
-        lag_basis: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Create tensor product basis by taking outer product of variable and lag bases. 
-        Also returns nans mask for tensor_basis to remove nans introduced by lags at the 
-        beginning of the tensor_basis.
+        Predict functional MRI time courses from physio time courses.
 
         Parameters
         ----------
-        var_basis : np.ndarray
-            Basis functions for predictor variable
-        lag_basis : np.ndarray
-            Basis functions for lags
-            
-        Returns
-        -------
-        np.ndarray
-            Tensor product basis matrix
+        X: np.ndarray
+            The physio time course represented in an ndarray with time points
+            along the rows and a single column (# of time points, 1).
         """
-        n_samples = var_basis.shape[0]
-        n_var_basis = var_basis.shape[1]
-        n_lag_basis = lag_basis.shape[1]
-        
-        tensor_basis = np.zeros((n_samples, n_var_basis * n_lag_basis))
-        for i in range(n_var_basis):
-            var_lag_mat = _lag_mat(var_basis[:, [i]], self.lag_basis.lags)
-            for j in range(n_lag_basis):
-                tensor_basis[:, i * n_lag_basis + j] = np.dot(var_lag_mat, lag_basis[:, j])
-        
-        # lags introduce nans at the beginning of the tensor_basis
-        nan_mask = np.isnan(tensor_basis).any(axis=1)
-
-        return tensor_basis, nan_mask
-
-    def predict(
-        self,
-        lag_max: float = None,
-        lag_min: float = None,
-        n_eval: int = 30,
-        pred_val: float = 1.0
-    ) -> DistributedLagModelPredResults:
-        """
-        Get predicted functional time course at lags of the physio signal.
-        
-        Parameters
-        ----------
-        lag_max : float
-            Maximum lag for prediction
-        lag_min : float
-            Minimum lag for prediction. Must be a negative integer.
-        n_eval : int
-            Number of evaluation points
-        pred_val : float
-            Value of predictor variable for prediction
-            
-        Returns
-        -------
-        DistributedLagModelPredResults
-            Container with prediction results
-        """
-        if lag_max is None:
-            lag_max = self.nlags
-        if lag_min is None:
-            lag_min = self.neg_nlags
-        else:
-            if lag_min > 0:
-                raise ValueError("lag_min must be a negative integer")
-            
-        # Create evaluation points
-        pred_lags = np.linspace(lag_min, lag_max, n_eval)
-        
-        # Transform predictor value - create array with n_eval rows
-        pred_val_array = np.full((n_eval, 1), pred_val)
-        pred_val_basis = dmatrix(
-            self.var_basis.design_info,
-            {'x': pred_val_array}
+        # project physio signal lags on B-spline basis
+        x_basis = self.basis.transform(X)
+        # create nan mask for x_basis
+        self.nan_mask = np.isnan(x_basis).any(axis=1)
+        # initialize output func with NaNs
+        pred_func = np.full(
+            (x_basis.shape[0], self.glm.coef_.shape[0]),
+            np.nan
         )
-
-        # Transform lags using BSplineLagBasis
-        pred_lag_basis = dmatrix(
-            self.lag_basis.basis.design_info,
-            {'x': pred_lags}
-        )
-
-        # Create tensor product basis for prediction
-        # pred_basis = self._create_tensor_basis(pred_val_basis, pred_lag_basis)
-        pred_basis = [
-            pred_val_basis[:,[v]]*pred_lag_basis[:,[l]] 
-            for v in range(pred_val_basis.shape[1]) 
-            for l in range(pred_lag_basis.shape[1])
-        ]
-        pred_basis = np.hstack(pred_basis)
-
-        # Get predictions
-        pred_func = self.glm.predict(pred_basis)
-        
-        # Package results
-        dlm_pred = DistributedLagModelPredResults(
-            pred_func=pred_func,
-            dlm_params={
-                'lag_max': lag_max,
-                'lag_min': lag_min,
-                'n_eval': n_eval,
-                'pred_lags': pred_lags,
-                'basis_var_type': self.basis_var_type,
-                'basis_lag_type': self.basis_lag_type
-            }
-        )
-        
-        return dlm_pred
+        # get predictions from model
+        pred_func[~self.nan_mask,:] = self.glm.predict(x_basis[~self.nan_mask])
+        return pred_func
 
 
 class MultivariateDistributedLagModel:
@@ -665,7 +462,7 @@ class MultivariateDistributedLagModel:
                 
         return outer_basis
 
-    def predict(
+    def evaluate(
         self,
         lag_max: float = None,
         lag_min: float = None,
@@ -673,7 +470,7 @@ class MultivariateDistributedLagModel:
         pred_vals: List[float] = None
     ) -> DistributedLagModelPredResults:
         """
-        Get predicted functional time course at specified values for each signal.
+        Evaluate the model at user-specified values of the physio signal.
         
         Parameters
         ----------
