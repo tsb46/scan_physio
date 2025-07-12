@@ -1,7 +1,9 @@
+fbpca==1.0
 mne==1.7.1
 neurokit2==0.2.11
 nilearn==0.10.4
 nipype==1.8.6
 pandas==2.0.1
 patsy==0.5.3
+PyWavelets==1.8.0
 tedana==24.0.1

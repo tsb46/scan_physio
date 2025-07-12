@@ -7,11 +7,13 @@ from scan.model import corr
 from scan.model import cluster
 
 from scan.model.corr import DistributedLagModel
-from scan.model.corr import DistributedLagNonLinearModel
+from scan.model.corr import MultivariateDistributedLagModel
+from scan.model.complex_pca import ComplexPCA
 
 __all__ = [
     'corr',
     'cluster',
     'DistributedLagModel',
-    'DistributedLagNonLinearModel'
+    'MultivariateDistributedLagModel',
+    'ComplexPCA'
 ]

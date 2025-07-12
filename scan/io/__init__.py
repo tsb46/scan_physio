@@ -1,7 +1,7 @@
 """
 Read and write utilities
 """
-from scan.io import file, load, write
+from scan.io import file, load, write, utils
 
 from scan.io.file import Participant
 

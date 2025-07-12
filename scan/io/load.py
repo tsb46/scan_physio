@@ -3,13 +3,17 @@ Module for loading and concatenating functional (func.gii),
 eeg and physio.
 """
 import json
-from typing import Literal, List, Tuple
+import os
+import warnings
+
+from typing import Literal, List, Tuple, Dict
 
 import nibabel as nb
 import nilearn
 import numpy as np
 
 from scan.io.file import Participant
+from scan.io import utils
 from scipy.stats import zscore
 
 
@@ -64,7 +68,35 @@ class Gifti:
             combined_data.append(np.hstack((data_left, data_right)))
 
         return np.vstack(combined_data)
-
+    
+    def load_separate(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        load left and right hemisphere func.gii and return as separate arrays
+        """
+        # loop through arrays and return as separate arrays
+        lh_data = []
+        rh_data = []
+        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays):
+            lh_data.append(lh_d.data)
+            rh_data.append(rh_d.data)
+        return np.array(lh_data), np.array(rh_data)
+    
+    def merge(self, lh_data: np.ndarray, rh_data: np.ndarray) -> np.ndarray:
+        """
+        Concatenate left and right hemisphere arrays into single array
+        """
+        if lh_data.shape[1] != self.lh_nvert:
+            raise ValueError(
+                'the # of vertices in the input left hemisphere data does'
+                'not match the number of expected left hemisphere vertices'
+            )
+        if rh_data.shape[1] != self.rh_nvert:
+            raise ValueError(
+                'the # of vertices in the input right hemisphere data does'
+                'not match the number of expected right hemisphere vertices'
+            )
+        return np.hstack((lh_data, rh_data))
+    
     def split(self, combined_data: np.ndarray) -> Tuple[np.ndarray,np.ndarray]:
         """
         split concatenated array into left and right hemisphere arrays (in
@@ -140,7 +172,10 @@ class DatasetLoad:
         func_low_pass: bool = False,
         func_high_pass: bool = False,
         physio_low_pass: bool = False,
-        physio_high_pass: bool = False
+        physio_high_pass: bool = False,
+        input_mask: bool = False,
+        lh_roi_masks: List[str] = None,
+        rh_roi_masks: List[str] = None
     ) -> Tuple[dict, Gifti]:
         """
         Iteratively load scan data and concatenate for group
@@ -183,9 +218,23 @@ class DatasetLoad:
             high-pass filtering on physio time courses (default: False)
         physio_low_pass: bool
             low-pass filtering on physio time courses (default: False)
+        input_mask: bool
+            whether to apply roi masks to func.gii data (default: False). 
+            Masks should have have a value of 1 for vertices within the mask,
+            and 0 for vertices outside the mask. Time courses of vertices within the mask 
+            are averaged together, and returned instead of the vertex time courses.
+            BOTH left and right hemisphere roi masks should be passed as a list, with
+            matching ROIs in the left and right hemisphers in the same order.
+        lh_roi_masks: List[str]
+            list of left hemisphere roi mask file paths to apply to
+            func.gii data. See input_mask for more details. If input_mask is False,
+            this parameter is ignored.
+        rh_roi_masks: List[str]
+            list of right hemisphere roi mask file paths to apply to
+            func.gii data. See input_mask for more details. If input_mask is False,
+            this parameter is ignored.
         verbose: bool
             print progress (default: True)
-
 
         Returns
         -------
@@ -207,7 +256,15 @@ class DatasetLoad:
         # check if data_type is valid
         if not all(d in ['func', 'physio'] for d in data_type):
             raise ValueError(f'data type {data_type} is not available')
-        
+
+        # if roi_masks are passed, load them
+        if input_mask:
+            lh_roi, rh_roi = self._load_masks(lh_roi_masks, rh_roi_masks)
+        else:
+            if lh_roi_masks is not None or rh_roi_masks is not None:
+                warnings.warn('roi masks are passed, but input_mask is False. ROI masks will be ignored.')
+            lh_roi, rh_roi = None, None
+            
         # initalize output dictionary
         output = {
             'func': [],
@@ -236,7 +293,10 @@ class DatasetLoad:
                 func_low_pass=func_low_pass,
                 func_high_pass=func_high_pass,
                 physio_low_pass=physio_low_pass,
-                physio_high_pass=physio_high_pass
+                physio_high_pass=physio_high_pass,
+                roi_lh_masks=lh_roi,
+                roi_rh_masks=rh_roi,
+                input_mask=input_mask
             )
             output['func'].append(data_out['func'])
 
@@ -260,7 +320,10 @@ class DatasetLoad:
         func_low_pass: bool = False,
         func_high_pass: bool = False,
         physio_low_pass: bool = False,
-        physio_high_pass: bool = False
+        physio_high_pass: bool = False,
+        roi_lh_masks: Dict[str,np.ndarray] = None,
+        roi_rh_masks: Dict[str, np.ndarray] = None,
+        input_mask: bool = False
     ) -> Tuple[dict, Gifti]:
         """
         given subject and session label, load func or physio data. Data is
@@ -282,6 +345,22 @@ class DatasetLoad:
             subject label
         ses: str
             subject
+        norm: Literal['zscore', 'demean', None]
+            whether to normalize the data (default: zscore)
+        func_low_pass: bool
+            whether to perform low-pass filtering on func.gii data
+        func_high_pass: bool
+            whether to perform high-pass filtering on func.gii data
+        physio_low_pass: bool
+            whether to perform low-pass filtering on physio data
+        physio_high_pass: bool
+            whether to perform high-pass filtering on physio data
+        roi_lh_masks: Dict[str, np.ndarray]
+            left hemisphere roi mask with keys as the roi name
+        roi_rh_masks: Dict[str, np.ndarray]
+            right hemisphere roi mask with keys as the roi name
+        input_mask: bool
+            whether to apply roi masks to func.gii data
 
         Returns
         -------
@@ -319,19 +398,30 @@ class DatasetLoad:
                 )
                 fp_rh = self.iter.to_file(
                     data=d, subject=subj, session=ses,
-                    basedir=self.func_dir, file_ext='lh.func.gii'
+                    basedir=self.func_dir, file_ext='rh.func.gii'
                 )
                 # load gifti data
                 func_gii = Gifti(fp_lh, fp_rh)
+                if input_mask:
+                    func_data = self._extract_roi(
+                        func_gii,
+                        roi_lh_masks,
+                        roi_rh_masks
+                    )
+                else:
+                    func_data = func_gii.load()
+
                 # signal filtering, if specified in init
-                func_gii_data = self._filter(
-                    func_gii.load(),
+                func_data_proc = utils.filter(
+                    func_data,
                     low_pass=func_low_pass,
-                    high_pass=func_high_pass
+                    high_pass=func_high_pass,
+                    tr=self.params['func']['tr']
                 )
                 # normalize data, if specified in init
-                func_gii_data = self._norm(func_gii_data, norm=norm)
-                output[d] = func_gii_data
+                func_data_proc = utils.norm(func_data_proc, norm=norm)
+                output[d] = func_data_proc
+
             if d == 'physio':
                 # loop through physio signals of dataset
                 output[d] = {}
@@ -347,16 +437,92 @@ class DatasetLoad:
                         # signal filtering, if specified in init
                         # do not filter or normalize if physio is sample weights
                         if p_out != 'weight':
-                            physio = self._filter(
+                            physio = utils.filter(
                                 physio, 
                                 low_pass=physio_low_pass, 
-                                high_pass=physio_high_pass
+                                high_pass=physio_high_pass,
+                                tr=self.params['func']['tr']
                             )
                             # normalize data, if specified in init
-                            physio = self._norm(physio, norm=norm)
+                            physio = utils.norm(physio, norm=norm)
                         output[d][p_out] = physio
 
         return output, func_gii
+
+    def _extract_roi(
+        self,
+        gifti: Gifti,
+        left_roi_masks: Dict[str,np.ndarray],
+        right_roi_masks: Dict[str, np.ndarray]
+    ) -> np.ndarray:
+        """
+        extract roi time courses from func.gii data
+
+        Parameters
+        ----------
+        gifti: Gifti
+            Gifti class for storing gifti parameters
+        left_roi_masks: Dict[str,np.ndarray]
+            left hemisphere roi mask with keys as the roi name
+        right_roi_masks: Dict[str, np.ndarray]
+            right hemisphere roi mask with keys as the roi name
+
+        Returns
+        -------
+        roi_data: np.ndarray
+            roi time courses arranged in column-order (left hemisphere time courses
+            followed by right hemisphere time courses)
+        """
+        lh_func, rh_func = gifti.load_separate()
+        # loop through roi masks and extract roi time courses
+        roi_data = []
+        roi_names = []
+        for lh_roi_name, lh_roi in left_roi_masks.items():
+            roi_data.append(lh_func[:, lh_roi].mean(axis=1)[:, np.newaxis])
+            roi_names.append(lh_roi_name)
+        for rh_roi_name, rh_roi in right_roi_masks.items():
+            roi_data.append(rh_func[:, rh_roi].mean(axis=1)[:, np.newaxis])
+            roi_names.append(rh_roi_name)
+        roi_data = np.hstack(roi_data)
+        # set roi names for future reference
+        self.roi_names = roi_names
+        return roi_data
+
+        
+    def _load_masks(
+        self, 
+        lh_roi_mask_fps: List[str], 
+        rh_roi_mask_fps: List[str]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """
+        check if roi masks are valid and load them
+        """
+        # check if roi_masks are passed as a list
+        if not isinstance(lh_roi_mask_fps, list):
+            raise ValueError('lh_roi_masks must be passed as a list')
+        # check if roi_masks are passed as a list
+        if not isinstance(rh_roi_mask_fps, list):
+            raise ValueError('rh_roi_masks must be passed as a list')
+        # check if roi masks are valid
+        if not all(os.path.exists(roi_mask) for roi_mask in lh_roi_mask_fps):
+            raise ValueError('lh_roi_masks must be valid file paths')
+        if not all(os.path.exists(roi_mask) for roi_mask in rh_roi_mask_fps):
+            raise ValueError('rh_roi_masks must be valid file paths')
+        # load roi masks
+        lh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in lh_roi_mask_fps]
+        rh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in rh_roi_mask_fps]
+        # check if roi masks are valid
+        utils.check_roi_masks(lh_roi, rh_roi)
+        # convert to boolean mask
+        lh_roi_mask = {
+            roi_name: roi_mask == 1 
+            for roi_name, roi_mask in zip(lh_roi_mask_fps, lh_roi)
+        }
+        rh_roi_mask = {
+            roi_name: roi_mask == 1 
+            for roi_name, roi_mask in zip(rh_roi_mask_fps, rh_roi)
+        }
+        return lh_roi_mask, rh_roi_mask
 
     def _concat(
         self,
@@ -377,54 +543,5 @@ class DatasetLoad:
                         )
         return data_dict
 
-    def _filter(
-        self, 
-        signals: np.ndarray, 
-        low_pass: bool, 
-        high_pass: bool
-    ) -> np.ndarray:
-        """
-        perform low- (< 0.15), high- (>0.01) or band-pass filtering
-        of time courses with nilearn.signal.butterworth (5th order butterworth
-        filter with padding of 100 samples). If no filtering
-        is specified, return original signal
-        """
-        if low_pass or high_pass:
-            # specify low- and high-pass cutoffs
-            if high_pass:
-                highpass = 0.01
-            else:
-                highpass = None
-
-            if low_pass:
-                lowpass = 0.15
-            else:
-                lowpass = None
-
-            # get sampling frequency
-            sf = 1/self.params['func']['tr']
-            # perform signal filtering
-            signals = nilearn.signal.butterworth(
-                signals, sampling_rate=sf, low_pass=lowpass,
-                high_pass=highpass, padlen=100
-            )
-
-        return signals
-
-    def _norm(
-        self, 
-        signals: np.ndarray, 
-        norm: Literal['zscore', 'demean', None] = 'zscore'
-    ) -> np.ndarray:
-        """
-        normalize signals, either with zscoring or mean centering. If no
-        normalization is specified, return original signal
-        """
-        if norm == 'zscore':
-            # zscore along temporal dimension
-            signals = zscore(signals, axis=0)
-        elif norm == 'demean':
-            signals -= np.mean(signals, axis=0)
-        return signals
 
 
