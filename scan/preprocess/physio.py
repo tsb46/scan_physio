@@ -153,7 +153,7 @@ def extract_eeg_vigilance(
     """
     Window-based computation of vigilance index from eeg data. Computed as
     the ratio of the power in the Alpha (8-12 Hz) band to the power in the
-    Theta (4-7 Hz) band.
+    Theta (4-7 Hz) band. Returns alpha and theta power with vigilance signal.
 
     Parameters
     ----------
@@ -167,7 +167,7 @@ def extract_eeg_vigilance(
     Returns
     -------
     vigilance: dict[str, np.ndarray]
-        vigilance index
+        vigilance index (ratio of alpha and theta), alpha and theta power
     """
     # define alpha and theta bands
     alpha_band = (8, 12)
@@ -189,6 +189,8 @@ def extract_eeg_vigilance(
     # compute vigilance index
     vigilance = alpha_power_avg / theta_power_avg
     return {
+        'alpha_power': alpha_power_avg,
+        'theta_power': theta_power_avg,
         'eeg_vigilance': vigilance
     }
 

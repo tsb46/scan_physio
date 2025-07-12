@@ -66,13 +66,21 @@
           "resp_rate"
         ], 
         "weight": ["weight"], 
-        "eeg": ["eeg_vigilance"],
+        "eeg": ["eeg_vigilance", "theta_power", "alpha_power"],
         "motion": [
           "framewise_displacement", 
           "pitch",
           "trans_z",
           "trans_y"
         ]
+      },
+      "pipeline_skip": {
+        "framewise_displacement": ["trim", "resample"],
+        "pitch": ["trim", "resample"],
+        "trans_z": ["trim", "resample"],
+        "trans_y": ["trim", "resample"],
+        "eeg_vigilance": ["detrend"],
+        "weight": ["detrend", "lowpass"]
       }
     }
   },

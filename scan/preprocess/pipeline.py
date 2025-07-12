@@ -14,7 +14,6 @@ import neurokit2 as nk
 import nibabel as nb
 import numpy as np
 import pandas as pd
-from tedana.workflows import tedana_workflow
 
 from scan.io.file import Participant
 from scan.preprocess import dataset as ds
@@ -58,7 +57,11 @@ def physio_func_map(
             output_map = {'weight': 'weight'}
         elif p.startswith('eeg'):
             func = physio.extract_eeg_vigilance
-            output_map = {'eeg_vigilance': 'eeg_vigilance'}
+            output_map = {
+                'eeg_vigilance': 'eeg_vigilance',
+                'theta_power': 'theta_power',
+                'alpha_power': 'alpha_power'
+            }
         elif p.startswith('motion'):
             func = physio.extract_motion
             output_map = {
@@ -143,7 +146,7 @@ class PhysioPipeOut(Enum):
 class FileMapper:
     """
     Utility class for mapping input and output files for
-    anatomical and functional
+    anatomical and functional and physio
 
     Attributes
     ----------
@@ -1038,7 +1041,7 @@ class PhysioPipeline:
     2. Extract physio signal features - e.g. respiratory amplitude
     3. Trim physio signals to match trimming of functional volumes
     4. Detrending (polynomial order 2 - quadratic) - except for eeg_vigilance
-    5. Low-pass filter (<0.25 Hz)
+    5. Low-pass filter (<0.20 Hz) - except for weight
     6. Interpolation to functional MRI volumes
 
     Attributes
@@ -1064,6 +1067,8 @@ class PhysioPipeline:
     run():
         Execute physio preprocessing pipeline
     """
+    STEPS = ['trim', 'detrend', 'lowpass', 'resample']
+
     def __init__(
         self,
         dataset: str,
@@ -1102,28 +1107,45 @@ class PhysioPipeline:
             trim_n = int(sf[p] * self.trim)
             # loop over extracted physio signal features
             for physio_out, signal in signals_extract.items():
-                signal_trim = signal[trim_n:]
-                # detrend and resample to functional
-                if physio_out == 'weight':
-                # if sample weights, use nearest-neighbour interpolation
-                    interp_method = 'nearest'
+                pipeline_steps = self._set_pipeline_steps(physio_out)
+                # trim physio to functional length (account for removal of dummy scans)
+                if pipeline_steps['trim']:
+                    signal_proc = signal[trim_n:]
                 else:
-                    interp_method = 'cubic'
-                    # quadratic detrend
-                    # skip detrending for eeg vigilance signal
-                    # TODO: should handle this in params.json
-                    if physio_out != 'eeg_vigilance':
-                        signal_trim = nk.signal_detrend(
-                            signal_trim, method='polynomial', order=2
+                    signal_proc = signal
+
+                # polynomial (2nd order) detrending
+                if pipeline_steps['detrend']:
+                    signal_proc = nk.signal_detrend(
+                            signal_proc, method='polynomial', order=2
                         )
-                # resample physio
-                signal_resamp = self._resample_physio(
-                    signal_trim, sf[p], interp_method=interp_method
-                )
+                # low-pass filtering
+                if pipeline_steps['lowpass']:
+                    signal_proc = nk.signal_filter(
+                        signal_proc, 
+                        sampling_rate=sf[p], 
+                        highcut=0.20, 
+                        order=5
+                    )
+                # resampling via cubic interpolation to functional scan volumes
+                # for signals other than weight, signal should be low-passed
+                if pipeline_steps['resample']:
+                    # set interpolation method to 'nearest' for sample weight
+                    if physio_out == 'weight':
+                    # if sample weights, use nearest-neighbour interpolation
+                        interp_method = 'nearest'
+                    else:
+                        interp_method = 'cubic'
+                    # resample physio
+                    signal_proc = self._resample_physio(
+                        signal_proc, 
+                        sf[p], 
+                        interp_method=interp_method
+                    )
                 # save out physio in .txt format
                 np.savetxt(
                     self.fmap['physio'][self.subj][self.ses]['proc'][physio_out],
-                    signal_resamp
+                    signal_proc
                 )
 
     def _calc_frame_times(self) -> np.ndarray:
@@ -1260,11 +1282,10 @@ class PhysioPipeline:
         interp_method: Literal['cubic', 'nearest'] = 'cubic'
     ) -> np.ndarray:
         """
-        Resample preprocessed physio signals to functional scan volumes.
-        For physio recordings, signals are first low-pass filtered (< 0.5 Hz)
-        and then interpolated (cubic) to functional volume samples using
-        self.sample_times attribute. If sample weights (set interp_method as
-        'nearest') signals are nearest-neighbour resampled (no filtering).
+        Resample preprocessed physio signals to functional scan volumes using 
+        cubic or nearest neighbor interpolation to the self.func_t (functional times) 
+        attribute. For physio recordings, signals should be first low-pass 
+        filtered (< 0.2 Hz).
 
         Parameters
         ----------
@@ -1282,22 +1303,49 @@ class PhysioPipeline:
             physio signal resampled to functional volumes
         """
         # dont filter sample weights
-        if interp_method == 'cubic':
-            signal_filt = nk.signal_filter(
-                signal, sampling_rate=sf, highcut=0.20, order=5
-            )
-        elif interp_method == 'nearest':
-            signal_filt = signal
-        else:
+        if interp_method not in ['cubic', 'nearest']:
             raise ValueError('interp method must be cubic or nearest')
-        signal_t = np.arange(len(signal_filt))*(1/sf)
+        # get signal time points
+        signal_t = np.arange(len(signal))*(1/sf)
         signal_resamp = nk.signal_interpolate(
             x_values=signal_t, 
-            y_values=signal_filt,
+            y_values=signal,
             x_new=self.func_t, 
             method=interp_method
         )
         return signal_resamp
+
+    def _set_pipeline_steps(self, p: str) -> dict[str, bool]:
+        """
+        Set pipeline steps for a given physio signal.
+
+        Parameters
+        ----------
+        p: str
+            physio signal label
+
+        """
+        # first, check whether physio signal is in pipeline_skip
+        if p in self.params['physio']['pipeline_skip']:
+            # get pipeline skip params
+            pipeline_skip = self.params['physio']['pipeline_skip'][p]
+            # check that steps are in pipeline_skip
+            for s in pipeline_skip:
+                if s not in self.STEPS:
+                    raise ValueError(f'{s} is not a valid pipeline step')
+        else:
+            pipeline_skip = []
+        # get pipeline steps
+        pipeline_steps = {}
+        for s in self.STEPS:
+            if s in pipeline_skip:
+                pipeline_steps[s] = False
+            else:
+                pipeline_steps[s] = True
+        return pipeline_steps
+
+        
+
 
 
 def tedana_denoise(
