@@ -8,7 +8,7 @@ from scan.preprocess import physio
 from scan.preprocess import workbench
 from scan.preprocess import custom
 from scan.preprocess.pipeline import Pipeline
-
+from scan.preprocess.pipeline import FileMapper
 
 __all__ = [
     'fsl',
@@ -17,5 +17,6 @@ __all__ = [
     'physio',
     'workbench',
     'custom',
-    'Pipeline'
+    'Pipeline',
+    'FileMapper'
 ]

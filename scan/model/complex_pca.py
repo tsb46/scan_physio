@@ -1,7 +1,6 @@
 """
 Module for performing complex-valued PCA on functional MRI data.
 """
-from typing import Tuple
 
 import fbpca
 import numpy as np
@@ -19,18 +18,17 @@ class ComplexPCA:
     def decompose(self, X: np.ndarray) -> ComplexPCAResults:
         # get number of observations
         n_samples = X.shape[0]
-        # perform hilbert transform.
-        X_c = hilbert_transform(X)
+        # perform hilbert transform (overwrite X to save memory)
+        X = hilbert_transform(X)
         # fbpca pca
-        (U, s, Va) = fbpca.pca(X_c, k=self.n_components, n_iter=self.n_iter)
+        (U, s, Va) = fbpca.pca(X, k=self.n_components, n_iter=self.n_iter)
         # calc explained variance
-        explained_variance_ = ((s ** 2) / (n_samples - 1)) / X_c.shape[1]
-        total_var = explained_variance_.sum()
+        explained_variance_ = ((s ** 2) / (n_samples - 1)) / X.shape[1]
         # compute PC scores
-        pc_scores = X_c @ Va.T
+        pc_scores = X @ Va.T
         # get loadings from eigenvectors
         loadings =  Va.T @ np.diag(s) 
-        loadings /= np.sqrt(X_c.shape[0]-1)
+        loadings /= np.sqrt(X.shape[0]-1)
         # store results in class
         self.U = U
         self.s = s
@@ -40,7 +38,7 @@ class ComplexPCA:
         self.explained_variance = explained_variance_
         return ComplexPCAResults(pc_scores, loadings, explained_variance_)
     
-    def reconstruct(self, i: int, n_bins: int = 10) -> ComplexPCAReconResults:
+    def reconstruct(self, i: int, n_bins: int = 20) -> ComplexPCAReconResults:
         """
         Reconstruct spatiotemporal pattern for PC i from 
         complex-valued PCA results via averaging across timepoints within
@@ -103,11 +101,11 @@ def hilbert_transform(input_data: np.ndarray) -> np.ndarray:
     """
     Apply Hilbert transform to input data. Complex-valued data is returned.
     """
-    input_data = hilbert(input_data, axis=0)
+    result = hilbert(input_data, axis=0)
     # the conjugate of the transformed data is taken so as to ensure that 
     # the phase angles of the principal components progress in the rightward
     # direction.
-    return input_data.conj()
+    return result.conj() # type: ignore
 
 
 def _average_bins(

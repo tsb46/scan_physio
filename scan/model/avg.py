@@ -42,15 +42,14 @@ class EventFinder:
 
     def __init__(
         self,
-        threshold: Union[float, Dict[str, float]] = None,
-        height: Union[float, Dict[str, float]] = None,
+        threshold: Union[float, Dict[str, float]] | None = None,
+        height: Union[float, Dict[str, float]] | None = None,
         distance: int = 1,
         prominence: Optional[Union[float, Dict[str, float]]] = None,
         width: Optional[Union[int, Dict[str, int]]] = None,
         rel_height: float = 0.5,
         plateau_size: Optional[int] = None,
-        co_localization_tolerance: int = None,
-        mask: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None,
+        co_localization_tolerance: int | None = None
     ):
         """
         Initialize EventFinder with peak detection parameters.
@@ -84,10 +83,6 @@ class EventFinder:
         co_localization_tolerance : int, optional
             Tolerance window in samples for determining co-localized events
             between different signals. If None, uses the distance parameter.
-        mask : np.ndarray or Dict[str, np.ndarray], optional
-            Binary mask (1s and 0s) to exclude peaks at timepoints with 0 values.
-            If dict, maps signal names to specific masks. Must match signal length.
-            If None, no masking is applied.
         """
         self.threshold = threshold
         self.height = height
@@ -97,11 +92,11 @@ class EventFinder:
         self.rel_height = rel_height
         self.plateau_size = plateau_size
         self.co_localization_tolerance = co_localization_tolerance
-        self.mask = mask
 
     def find_events(
         self, 
-        signals: Union[np.ndarray, Dict[str, np.ndarray]]
+        signals: Union[np.ndarray, Dict[str, np.ndarray]],
+        mask: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None,
     ) -> EventFinderResults:
         """
         Find events in physiological signals using peak detection.
@@ -111,6 +106,11 @@ class EventFinder:
         signals : np.ndarray or Dict[str, np.ndarray]
             Single signal array or dictionary mapping signal names to arrays.
             Each array should be 1D with timepoints in rows.
+
+        mask : np.ndarray or Dict[str, np.ndarray], optional
+            Binary mask (1s and 0s) to exclude peaks at timepoints with 0 values.
+            If dict, maps signal names to specific masks. Must match signal length.
+            If None, no masking is applied.
             
         Returns
         -------
@@ -133,12 +133,11 @@ class EventFinder:
             height = self._get_param_for_signal(self.height, signal_name)
             prominence = self._get_param_for_signal(self.prominence, signal_name)
             width = self._get_param_for_signal(self.width, signal_name)
-            mask = self._get_param_for_signal(self.mask, signal_name)
             
             # Find peaks using scipy.signal.find_peaks
             peak_kwargs = {
                 'distance': self.distance,
-                'rel_height': self.rel_height,
+                'rel_height': self.rel_height
             }
             
             if threshold is not None:
@@ -164,7 +163,7 @@ class EventFinder:
                 if len(peaks) > 0:
                     valid_peaks = []
                     for peak in peaks:
-                        if peak < len(mask) and mask[peak] == 1:
+                        if mask[peak] == 1:
                             valid_peaks.append(peak)
                     peaks = np.array(valid_peaks)
                 else:
@@ -187,14 +186,14 @@ class EventFinder:
             'rel_height': self.rel_height,
             'plateau_size': self.plateau_size,
             'co_localization_tolerance': self.co_localization_tolerance,
-            'mask': self.mask,
+            'mask': mask,
         }
         
         return EventFinderResults(events, co_localization_stats, event_finder_params)
 
     def _get_param_for_signal(
         self, 
-        param: Union[float, Dict[str, float], None], 
+        param: Union[float, Dict[str, float], Dict[str, int], None], 
         signal_name: str
     ) -> Optional[float]:
         """Helper method to get parameter value for a specific signal."""
@@ -231,7 +230,11 @@ class EventFinder:
                 pair_name = f"{signal1}_vs_{signal2}"
                 
                 # Find co-localized events within a tolerance window
-                tolerance = self.distance  # Use distance parameter as tolerance
+                if self.co_localization_tolerance is not None:
+                    tolerance = self.co_localization_tolerance
+                else:
+                    # use distance parameter as tolerance
+                    tolerance = self.distance
                 co_localized = self._find_co_localized_events(
                     events[signal1], events[signal2], tolerance
                 )

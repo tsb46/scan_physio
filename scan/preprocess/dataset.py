@@ -10,7 +10,11 @@ import numpy as np
 import pandas as pd
 
 from scipy.io import loadmat
-from scan.preprocess.fsl import load_fsl_motion_params
+
+
+VANDERBILT_EEG_CHAN_LABELS = [
+    'P3', 'P4', 'P7', 'P8', 'Pz', 'O1', 'O2', 'Oz'
+]
 
 def load_physio_newcastle(
     blink_fp: str,
@@ -41,7 +45,6 @@ def load_physio_newcastle(
     saccade_raw = pd.read_csv(saccade_fp)
     # load blink onsets from eye-tracking .csv file
     blink_raw = pd.read_csv(blink_fp)
-    breakpoint()
     # get json file path from physio_fp
     physio_json = os.path.splitext(os.path.splitext(physio_fp)[0])[0] + '.json'
     # load physio parameters from json file
@@ -168,7 +171,7 @@ def _extract_eeg_vanderbilt(
     eeg_data: np.ndarray
         eeg data
     """
-    eeg_chan = ['P3', 'P4', 'P7', 'P8', 'Pz', 'O1', 'O2', 'Oz']
+    eeg_chan = VANDERBILT_EEG_CHAN_LABELS
     eeg_chan_idx = [chan_labels.index(chan) for chan in eeg_chan]
     eeg_data = eeg_data[eeg_chan_idx, :]
     # transpose to time x channel
@@ -225,7 +228,7 @@ def _biopac_load_vanderbilt(
         sampling_rate=sf,
         desired_sampling_rate=sf_new
     )
-    return resp_resample, sf_new
+    return np.asarray(resp_resample), sf_new
 
 
 

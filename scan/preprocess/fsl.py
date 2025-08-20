@@ -15,7 +15,7 @@ from scan import utils
 fsl.FSLCommand.set_default_output_type('NIFTI_GZ')
 
 
-def bet(fp: str, fp_out: str, frac: float = None) -> None:
+def bet(fp: str, fp_out: str, frac: float | None = None) -> None:
     """
     BET - Skullstrip anatomical Image.
 
@@ -192,7 +192,7 @@ def trim_vol(fp: str, fp_out: str, n_trim: int) -> None:
     if n_trim >= 0:
         trim = fsl.ExtractROI(t_min=n_trim, t_size=-1)
     else:
-        n_end = nb.load(fp).shape[-1]
+        n_end = nb.load(fp).shape[-1] # type: ignore
         n_end -= abs(n_trim)
         trim = fsl.ExtractROI(t_min=0, t_size=n_end)
     trim.inputs.in_file = fp

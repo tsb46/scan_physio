@@ -4,7 +4,7 @@ Module for handling data file paths and iterating subject lists.
 
 import json
 from enum import Enum
-from typing import Literal, Tuple, Generator
+from typing import Literal, Tuple, Generator, List, Union
 
 import pandas as pd
 
@@ -94,9 +94,10 @@ class Participant:
         return self
 
     def __next__(self):
-        self.n += 1
         if self.n < self.n_scans:
-            return self.values[self.n]
+            current_value = self.values[self.n]
+            self.n += 1
+            return current_value
         raise StopIteration
 
     def subject(self) -> Generator[str, None, None]:
@@ -110,7 +111,7 @@ class Participant:
         """
         # does not reorder
         subjects = list(
-            dict.fromkeys([s[self.subject_loc] for s in self.values])
+            dict.fromkeys([s[self.subject_loc] for s in self.values]) # type: ignore
         )
         n_subj = len(subjects)
         n = 0
@@ -118,7 +119,7 @@ class Participant:
             yield subjects[n]
             n += 1
 
-    def subject_by_session(self) -> Generator[Tuple[str, str], None, None]:
+    def subject_by_session(self) -> Generator[Tuple[str, list[str]], None, None]:
         """
         Iterate through subjects and return
         (possible) multiple sessions as a nested
@@ -127,8 +128,8 @@ class Participant:
 
         Returns
         -------
-        subj_sess: Tuple[str,str]
-            subject label and session label
+        subj_sess: Tuple[str, list[str]]
+            subject label and list of session labels
         """
         subjects = list(self.subject())
         n_subj = len(subjects)
@@ -137,8 +138,8 @@ class Participant:
             subj = subjects[n]
             if self.session_loc is not None:
                 subj_ses = list(dict.fromkeys(
-                    [s[self.session_loc] for s in self.values
-                    if s[self.subject_loc] == subj]
+                    [s[self.session_loc] for s in self.values # type: ignore
+                    if s[self.subject_loc] == subj] # type: ignore
                 ))
             else:
                 subj_ses = ['']
@@ -148,9 +149,9 @@ class Participant:
     def filepath(
         self,
         data: Literal['func', 'anat', 'eeg', 'physio'],
-        basedir: str = None,
+        basedir: str | None = None,
         echo: bool = False,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[Union[str, List[str]], None, None]:
         """
         iterate through rows and return file path to
         data object (eeg, anat, func or physio). If specified,
@@ -180,7 +181,7 @@ class Participant:
             # if specified, loop through echos
             if (data == 'func') & echo & self.multiecho:
                 fp_echos = []
-                for n_e in range(self.n_echos):
+                for n_e in range(self.n_echos): # type: ignore
                     # assuming echo label always start at 0
                     # may not always be the case
                     ss['echo'] = n_e + 1
@@ -199,12 +200,12 @@ class Participant:
         self,
         data: Literal['func', 'anat', 'eeg', 'physio'],
         subject: str,
-        session: str = None,
-        file_ext: utils.FileExtParams = None,
-        echo: int = None,
-        physio: str = None,
-        physio_type: Literal['raw', 'out'] = None,
-        basedir: str = None
+        session: str | None = None,
+        file_ext: utils.FileExtParams | None = None,
+        echo: int | None = None,
+        physio: str | None = None,
+        physio_type: Literal['raw', 'out'] | None = None,
+        basedir: str | None = None
     ) -> str:
         """
         take fields (e.g. subject, session, echo) and return file path.
@@ -249,7 +250,7 @@ class Participant:
             basepath = ''
 
         # handle file extensions
-        file_ext = self._fileext(data, file_ext)
+        file_ext = self._fileext(data, file_ext) # type: ignore
 
         if data == 'func':
             if self.multiecho:

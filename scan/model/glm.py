@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import Ridge
 
-from patsy import dmatrix
+from patsy import dmatrix # type: ignore
 
 from scan.io.write import DistributedLagModelPredResults
 
@@ -40,7 +40,7 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
     knots: List[int]
         Locations of knots in spline basis across temporal lags. If provided,
         the n_knots parameter is ignored.
-    basis: Literal['ns','bs']
+    basis_type: Literal['ns','bs']
         basis type for the spline basis. 'ns' for natural spline, 'bs' for B-spline.
 
     Methods
@@ -58,8 +58,8 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         nlags: int, 
         neg_nlags: int = 0, 
         n_knots: int = 5,
-        knots: List[int] = None,
-        basis: Literal['ns','bs'] = 'bs'
+        knots: List[int] | None = None,
+        basis_type: Literal['cr','bs'] = 'bs'
     ):
         if neg_nlags > 0:
             raise ValueError("neg_nlags must be a negative integer")
@@ -69,9 +69,9 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         # specify knots parameters
         self.n_knots = n_knots
         self.knots = knots
-        self.basis = basis
+        self.basis_type = basis_type
 
-    def fit(self, X: np.ndarray, y: np.ndarray = None) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray | None = None):
         """
         create spline basis over lags of physio signal
 
@@ -86,18 +86,18 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         # create spline basis from sklearn SplineTransformer
         if self.knots is not None:
             self.basis = dmatrix(
-                f'{self.basis}(x, knots=self.knots) - 1',
+                f'{self.basis_type}(x, knots=self.knots) - 1',
                 {'x': self.lags}
             )
         else:
             self.basis = dmatrix(
-                f'{self.basis}(x, df=self.n_knots) - 1',
+                f'{self.basis_type}(x, df=self.n_knots) - 1',
                 {'x': self.lags}
             )
     
         return self
 
-    def transform(self, X: np.ndarray, y: np.ndarray = None) -> np.ndarray:
+    def transform(self, X: np.ndarray, y: np.ndarray | None = None) -> np.ndarray:
         """
         project lags of physio signal onto spline basis
 
@@ -115,7 +115,7 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
             Physio signal projected on B-spline basis.
         """
         # create lag matrix
-        lagmat = _lag_mat(X, self.lags)
+        lagmat = _lag_mat(X, self.lags.tolist())
         # get number of splines
         n_splines = self.basis.shape[1]
         # allocate memory
@@ -169,7 +169,7 @@ class DistributedLagModel:
         nlags: int,
         neg_nlags: int = 0,
         n_knots: int = 5,
-        knots: List[int] = None,
+        knots: List[int] | None = None,
         alpha: float = 0.01,
         basis: Literal['cr','bs'] = 'bs'
     ):
@@ -183,7 +183,7 @@ class DistributedLagModel:
         self.alpha = alpha
         self.basis_type = basis
 
-    def fit(self, X: np.ndarray, Y: np.ndarray, weights: np.ndarray = None) -> None:
+    def fit(self, X: np.ndarray, Y: np.ndarray, weights: np.ndarray | None = None):
         """
         fit regression model of physio lag spline basis regressed on functional
         time courses
@@ -203,7 +203,8 @@ class DistributedLagModel:
         # create B-spline basis across lags of physio signal
         self.basis = BSplineLagBasis(
             nlags=self.nlags, neg_nlags=self.neg_nlags,
-            n_knots=self.n_knots, knots=self.knots, basis=self.basis_type
+            n_knots=self.n_knots, knots=self.knots, 
+            basis_type=self.basis_type # type: ignore
         )
         self.basis.fit(X)
         # project physio signal lags on B-spline basis
@@ -224,8 +225,8 @@ class DistributedLagModel:
 
     def evaluate(
         self,
-        lag_max: float = None,
-        lag_min: float = None,
+        lag_max: float | None = None,
+        lag_min: float | None = None,
         n_eval: int = 30,
         pred_val: float = 1.0
     ) -> DistributedLagModelPredResults:
@@ -344,7 +345,7 @@ class MultivariateDistributedLagModel:
         nlags: int,
         neg_nlags: int = 0,
         n_knots: int = 5,
-        knots: List[int] = None,
+        knots: List[int] | None = None,
         alpha: float = 0.01,
         basis: Literal['cr','bs'] = 'bs'
     ):
@@ -358,7 +359,7 @@ class MultivariateDistributedLagModel:
         self.basis_type = basis
         self.n_signals = None  # Will be set during fit
 
-    def fit(self, X: np.ndarray, Y: np.ndarray, weights: np.ndarray = None) -> None:
+    def fit(self, X: np.ndarray, Y: np.ndarray, weights: np.ndarray | None = None):
         """
         Fit regression model using tensor product basis across all signals and their lags.
 
@@ -381,7 +382,7 @@ class MultivariateDistributedLagModel:
                 neg_nlags=self.neg_nlags,
                 n_knots=self.n_knots,
                 knots=self.knots if self.knots is not None else None,
-                basis=self.basis_type
+                basis=self.basis_type # type: ignore
             )
             basis.fit(X[:, [i]])
             self.bases.append(basis)
@@ -464,10 +465,10 @@ class MultivariateDistributedLagModel:
 
     def evaluate(
         self,
-        lag_max: float = None,
-        lag_min: float = None,
+        lag_max: float | None = None,
+        lag_min: float | None= None,
         n_eval: int = 30,
-        pred_vals: List[float] = None
+        pred_vals: List[float] | None = None
     ) -> DistributedLagModelPredResults:
         """
         Evaluate the model at user-specified values of the physio signal.
@@ -497,7 +498,7 @@ class MultivariateDistributedLagModel:
                 raise ValueError("lag_min must be a negative integer")
                 
         if pred_vals is None:
-            pred_vals = [1.0] * self.n_signals
+            pred_vals = [1.0] * self.n_signals # type: ignore
         elif len(pred_vals) != self.n_signals:
             raise ValueError(f"pred_vals must have length {self.n_signals}")
             

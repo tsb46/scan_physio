@@ -14,6 +14,7 @@ import neurokit2 as nk
 import nibabel as nb
 import numpy as np
 import pandas as pd
+from tedana.workflows import tedana_workflow
 
 from scan.io.file import Participant
 from scan.preprocess import dataset as ds
@@ -22,6 +23,7 @@ from scan.preprocess import freesurfer as fs
 from scan.preprocess import physio
 from scan.preprocess import workbench as wb
 from scan.preprocess.custom import trim_cifti
+from scan.preprocess.fsl import load_fsl_motion_params
 from scan import utils
 
 def physio_func_map(
@@ -162,7 +164,7 @@ class FileMapper:
 
     """
     # get participant iterator
-    def __init__(self, dataset: str, params: dict):
+    def __init__(self, dataset: Literal['vanderbilt', 'newcastle'], params: dict):
         self.dataset = dataset
         self.params = params
         # initialize participant iterator
@@ -215,7 +217,12 @@ class FileMapper:
 
         return file_map
 
-    def _map_anat(self, subj: str, dir_anat: str, file_map_subj: dict) -> None:
+    def _map_anat(
+            self, 
+            subj: str,
+            dir_anat: dict[str, str], 
+            file_map_subj: dict
+        ) -> None:
         """
         create output files for anatomical pipeline. Modify in-place
         """
@@ -262,7 +269,7 @@ class FileMapper:
         self,
         subj: str,
         ses: str,
-        dir_func: str,
+        dir_func: dict[str,str],
         file_map_subj: dict
     ) -> None:
         """
@@ -288,7 +295,7 @@ class FileMapper:
         self,
         subj: str,
         ses: str,
-        dir_func: str,
+        dir_func: dict[str, str],
         file_map_subj: dict
     ) -> None:
         """
@@ -324,7 +331,7 @@ class FileMapper:
                 file_map_subj[task][hemi] = self._filepath(
                     data='func', subject=subj, session=ses,
                     basedir=dir_func[task],
-                    file_ext=f'{hemi}.func.gii',
+                    file_ext=f'{hemi}.func.gii', # type: ignore
                 )
 
         # tedana out directory
@@ -371,8 +378,8 @@ class FileMapper:
         self,
         subj: str,
         ses: str,
-        dir_physio: str,
-        dir_func: str,
+        dir_physio: dict[str, str],
+        dir_func: dict[str, str],
         file_map_subj: dict
     ) -> None:
         """
@@ -493,11 +500,11 @@ class FileMapper:
         data: Literal['func', 'anat', 'physio'],
         basedir: str,
         subject: str,
-        file_ext: utils.FileExtParams = None,
+        file_ext: utils.FileExtParams | None = None,
         return_echos: bool = False,
-        physio_str: str = None,
-        physio_type: Literal['raw', 'out'] = None,
-        session: str = None,
+        physio_str: str | None = None,
+        physio_type: Literal['raw', 'out'] | None = None,
+        session: str | None = None,
     ) -> str:
         """
         take parameters and return file path
@@ -562,7 +569,7 @@ class FileMapper:
             # get full path
             fp = os.path.abspath(fp)
 
-        return fp
+        return fp # type: ignore
 
 
 class Pipeline:
@@ -805,7 +812,7 @@ class AnatomicalPipeline:
         # create midthickness files for left and right hemispheres
         for hemi in ['lh', 'rh']:
             wb.create_midthickness(
-                hemi = hemi,
+                hemi = hemi, # type: ignore
                 fs_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_mid_{hemi}'],
                 lr_mid = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fslr_mid_{hemi}'],
                 sphere_out = self.fmap['anat'][self.subj][AnatPipeOut.MISC.value][f'fs_sphere_{hemi}'],
@@ -949,7 +956,7 @@ class FunctionalPipelineFull:
             # from volume to native (subject) surface with Freesurfer
             # mri_vol2surf, additionaly performs surface-smoothing
             fs.vol2surf(
-                hemi = hemi,
+                hemi = hemi, # type: ignore
                 smooth_fwhm = self.func_params['smooth_fwhm'],
                 fp_in = fp_vol2surf,
                 fp_out =self.fmap['func'][self.subj][self.ses][FuncPipeOut.VOL2SURF.value][hemi],
@@ -1165,23 +1172,23 @@ class PhysioPipeline:
         func_tr = self.params['func']['tr']
         # load preprocessed functional scan to get number of volumes
         if self.params['func']['pipeline'] == 'full':
-            gii_lh = nb.load(
+            gii_lh = nb.load( # type: ignore
                 self.fmap['func'][self.subj][self.ses]['surface_lr']['lh']
-            )
-            func_len = len(gii_lh.darrays)
+            ) 
+            func_len = len(gii_lh.darrays) # type: ignore
         elif self.params['func']['pipeline'] == 'cifti-partial':
-            cifti = nb.load(
+            cifti = nb.load( # type: ignore
                 self.fmap['func'][self.subj][self.ses]['surface_smooth']
             )
             # get number of volumes (assumes time is the first dimension)
-            func_len = cifti.shape[0]
+            func_len = cifti.shape[0] # type: ignore
         # calculate interpolation time points
         frame_times =  func_tr * (np.arange(func_len) + 0.5)
         # round to two decimal points
         frame_times = np.round(frame_times, 2)
         return frame_times
 
-    def _load_physio(self) -> Tuple[dict[str, pd.Series], dict[str, float]]:
+    def _load_physio(self) -> Tuple[dict[str, pd.Series], dict[str, int]]:
         """
         load physio signals (dataset-specific)
 
@@ -1189,7 +1196,7 @@ class PhysioPipeline:
         -------
         signals: dict[str, pd.Series]
             physio signals
-        sf: dict[str, float]
+        sf: dict[str, int]
             sampling frequency of physio signals
         """
         # get physio loader
@@ -1206,7 +1213,7 @@ class PhysioPipeline:
             )
         # if motion signals are present, load fsl motion parameters
         if 'motion' in self.params['physio']['signals']:
-            signals['motion'] = ds.load_fsl_motion_params(
+            signals['motion'] = load_fsl_motion_params( # type: ignore
                 fp=self.fmap['physio'][self.subj][self.ses]['raw']['motion']
             )
             sf['motion'] = 1/self.params['func']['tr']
@@ -1235,11 +1242,11 @@ class PhysioPipeline:
                 plt.savefig(fp)
                 plt.close()
 
-        return signals, sf
+        return signals, sf # type: ignore
 
     def _physio_extract(
         self,
-        signal: np.ndarray,
+        signal: pd.Series,
         sf: float,
         physio_str: str
     ) -> dict[str, np.ndarray]:
@@ -1346,8 +1353,6 @@ class PhysioPipeline:
 
         
 
-
-
 def tedana_denoise(
     fps_in: str,
     echo_times: List[float],
@@ -1381,16 +1386,16 @@ def tedana_denoise(
 
 def _par_execute_anat(params: str) -> None:
     # execution of anatomical pipeline for run_parallel()
-    anat_proc = AnatomicalPipeline(**params)
+    anat_proc = AnatomicalPipeline(**params) # type: ignore
     anat_proc.run()
 
 
 def _par_execute_func(params: str, func_pipe_type: str) -> None:
     # execution of functional pipeline for run_parallel()
     if func_pipe_type == 'full':
-        func_proc = FunctionalPipelineFull(**params)
+        func_proc = FunctionalPipelineFull(**params) # type: ignore
     elif func_pipe_type == 'cifti-partial':
-        func_proc = FunctionalPipelineCiftiPartial(**params)
+        func_proc = FunctionalPipelineCiftiPartial(**params) # type: ignore
     else:
         raise ValueError(f'{func_pipe_type} is not a valid function pipeline type')
     func_proc.run()
@@ -1398,6 +1403,6 @@ def _par_execute_func(params: str, func_pipe_type: str) -> None:
 
 def _par_execute_physio(params: str) -> None:
     # execution of physio pipeline for run_parallel()
-    physio_proc = PhysioPipeline(**params)
+    physio_proc = PhysioPipeline(**params) # type: ignore
     physio_proc.run()
 

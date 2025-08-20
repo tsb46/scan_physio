@@ -4,16 +4,16 @@ Module for writing analysis results to func.gii.
 import pickle
 import os
 
-from typing import Literal, TypedDict
+from typing import Literal
 
 import nibabel as nb
 import numpy as np
 from nibabel.gifti import (
-    GiftiImage, 
-    GiftiDataArray, 
-    GiftiLabel, 
-    GiftiLabelTable,
-)
+    GiftiImage, #type: ignore
+    GiftiDataArray, #type: ignore
+    GiftiLabel, #type: ignore
+    GiftiLabelTable, #type: ignore
+) 
 
 from scan.io.load import Gifti
 
@@ -35,7 +35,7 @@ class ClusterResults:
         self,
         gii_params: Gifti,
         file_prefix: str = 'cluster_out',
-        out_dir: str = None
+        out_dir: str | None = None
     ) -> None:
         """
         Write out cluster labels to pickle and func.gii files.
@@ -81,7 +81,7 @@ class DistributedLagModelPredResults:
         self,
         gii_params: Gifti,
         file_prefix: str = 'dlm_pred_out',
-        out_dir: str = None
+        out_dir: str | None = None
     ) -> None:
         """
         Write out prediction results from dlm model to func.gii and pickle
@@ -145,8 +145,8 @@ class ComplexPCAResults:
     def write(
         self,
         gii_params: Gifti,
-        file_prefix: str = None,
-        out_dir: str = None
+        file_prefix: str | None= None,
+        out_dir: str | None = None
     ) -> None:
         """
         Write out complex-valued PCA results to func.gii file.
@@ -202,7 +202,12 @@ class ComplexPCAReconResults:
         self.bin_timepoints = bin_timepoints
         self.bin_centers = bin_centers
 
-    def write(self, gii_params: Gifti, file_prefix: str = None, out_dir: str = None) -> None:
+    def write(
+        self, 
+        gii_params: Gifti, 
+        file_prefix: str | None = None, 
+        out_dir: str | None = None
+    ) -> None:
         """
         Write out reconstructed time courses to func.gii file.
         """
@@ -217,7 +222,8 @@ class ComplexPCAReconResults:
         
         # write out reconstructed time courses to func.gii
         write_func_gii(self.bin_timepoints, gii_params, out_prefix)
-    
+
+
 class WindowAverageResults:
     """
     Class for storing results of windowed averaging. Provides
@@ -232,7 +238,7 @@ class WindowAverageResults:
         self,
         gii_params: Gifti,
         file_prefix: str = 'window_avg_out',
-        out_dir: str = None
+        out_dir: str | None = None
     ) -> None:
         """
         Write out averaged time courses to func.gii file.
@@ -284,8 +290,8 @@ def write_func_gii(data: np.ndarray, gii_params: Gifti, fp_out: str) -> None:
         gii_rh.add_gifti_data_array(gii_data_array_rh)
 
     # Save the new GIFTI files
-    nb.save(gii_lh, f'{fp_out}_lh.func.gii')
-    nb.save(gii_rh, f'{fp_out}_rh.func.gii')
+    nb.save(gii_lh, f'{fp_out}_lh.func.gii') # type: ignore
+    nb.save(gii_rh, f'{fp_out}_rh.func.gii') # type: ignore
 
     # set structure as left or right cortex to view in connectome workbench
     _set_structure(fp_out, 'func')
@@ -317,7 +323,7 @@ def write_label_gii(data: np.ndarray, gii_params: Gifti, fp_out: str) -> None:
         # associate with unique r, g, b values
         r, g, b = unique_colors[label_i]
         gifti_label = GiftiLabel(key=label, red=r, green=g, blue=b)
-        gifti_label.label = str(label)
+        gifti_label.label = str(label) # type: ignore
         label_table.labels.append(gifti_label)
 
     # Create new GiftiDataArrays for the left and right hemispheres
@@ -339,9 +345,9 @@ def write_label_gii(data: np.ndarray, gii_params: Gifti, fp_out: str) -> None:
     )
 
     # Save the new GIFTI files
-    nb.save(gii_lh, f'{fp_out}_lh.label.gii')
-    nb.save(gii_rh, f'{fp_out}_rh.label.gii')
-    
+    nb.save(gii_lh, f'{fp_out}_lh.label.gii') # type: ignore
+    nb.save(gii_rh, f'{fp_out}_rh.label.gii') # type: ignore
+
     # set structure as left or right cortex to view in connectome workbench
     _set_structure(fp_out, 'label')
 

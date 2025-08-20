@@ -80,7 +80,7 @@ def main():
     # create gifti label table
     label_table = GiftiLabelTable()
     gifti_label = GiftiLabel(key=1, red=1, green=0, blue=0)
-    gifti_label.label = str('SCAN')
+    gifti_label.label = str('SCAN') # type: ignore
     label_table.labels.append(gifti_label)
 
 

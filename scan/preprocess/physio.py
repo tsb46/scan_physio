@@ -12,7 +12,7 @@ from neurokit2.rsp.rsp_rvt import _rsp_rvt_find_min
 
 from scan.preprocess.custom import framewise_displacement
 
-def extract_eog_blink(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
+def extract_eog_blink(ts: np.ndarray, sf: int) -> dict[str, np.ndarray]:
     """
     Extract blink rate from eog signals
 
@@ -20,7 +20,7 @@ def extract_eog_blink(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
     ----------
     ts: np.ndarray
         time series of raw electrooculography (eog) signal
-    sf: float
+    sf: int
         sampling frequency
 
     Returns
@@ -31,13 +31,13 @@ def extract_eog_blink(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
     # resp amplitude label
     eog_blink = "EOG_Rate"
     # extract respiration amplitude and frequency
-    eog_signals, _ = nk.eog_process(ts, sampling_rate=sf)
+    eog_signals, _ = np.asarray(nk.eog_process(ts, sampling_rate=sf))
     return {
         'eog_blink': eog_signals[eog_blink].values
     }
 
 
-def extract_emg_amplitude(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
+def extract_emg_amplitude(ts: np.ndarray, sf: int) -> dict[str, np.ndarray]:
     """
     Extract electromyography or electrocorticography amplitude signals
 
@@ -45,7 +45,7 @@ def extract_emg_amplitude(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
     ----------
     ts: np.ndarray
         time series of raw emg signal
-    sf: float
+    sf: int
         sampling frequency
 
     Returns
@@ -63,7 +63,7 @@ def extract_emg_amplitude(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
     }
 
 
-def extract_motion(motion_params: dict[str, np.ndarray], sf: float = None) -> dict[str, np.ndarray]:
+def extract_motion(motion_params: dict[str, np.ndarray], sf: int | None = None) -> dict[str, np.ndarray]:
     """
     Extract motion parameters from motion parameters dictionary
 
@@ -91,7 +91,7 @@ def extract_motion(motion_params: dict[str, np.ndarray], sf: float = None) -> di
     return motion_params_extract
 
 
-def extract_resp_rvt(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
+def extract_resp_rvt(ts: np.ndarray, sf: int) -> dict[str, np.ndarray]:
     """
     Extract respiratory amplitude and rate by method of Harrison et al. (2021)
     https://doi.org/10.1016/j.neuroimage.2021.117787
@@ -114,14 +114,14 @@ def extract_resp_rvt(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
         sampling_rate=sf,
     )
     # extract respiration amplitude and frequency
-    rvt, phase = rsp_rvt_harrison(ts_clean, sf)
+    rvt, phase = rsp_rvt_harrison(np.asarray(ts_clean), sf)
     return {
         'resp_amp': rvt,
         'resp_rate': phase,
     }
 
 
-def extract_sample_weight(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
+def extract_sample_weight(ts: np.ndarray, sf: int) -> dict[str, np.ndarray]:
     """
     Return sample weights for weighting of individual time points in later
     regression analyses. This is needed due to known drop-out issues in some
@@ -147,7 +147,7 @@ def extract_sample_weight(ts: np.ndarray, sf: float) -> dict[str, np.ndarray]:
 
 def extract_eeg_vigilance(
     eeg_data: np.ndarray,
-    sf_eeg: float,
+    sf_eeg: int,
     window_sec: float = 2
 ) -> dict[str, np.ndarray]:
     """
@@ -159,7 +159,7 @@ def extract_eeg_vigilance(
     ----------
         eeg_data: np.ndarray
             eeg data (time x channel)
-        sf_eeg: float
+        sf_eeg: int
             sampling frequency of eeg data
         window_sec: float
             window size in seconds
@@ -196,7 +196,7 @@ def extract_eeg_vigilance(
 
 def _wavelet_power(
     data: np.ndarray,
-    sf: float,
+    sf: int,
     frequency_band: Tuple[float, float],
     precision: int = 20
 ) -> np.ndarray:
@@ -207,7 +207,7 @@ def _wavelet_power(
     ----------
         data: np.ndarray
             data (time x channel)
-        sf: float
+        sf: int
             sampling frequency
         frequency_band: Tuple[float, float]
             frequency band
@@ -234,7 +234,7 @@ def _wavelet_power(
 
 def rsp_rvt_harrison(
     rsp_signal: np.ndarray,
-    sf: float,
+    sf: int,
     boundaries: Tuple[float, float] = (2.0, 1 / 30),
     iterations: int = 10,
     silent: bool = False,
@@ -251,7 +251,7 @@ def rsp_rvt_harrison(
     ----------
     rsp_signal: np.ndarray
         respiratory signal
-    sf: float
+    sf: int
         sampling frequency
     boundaries: Tuple[float, float]
         boundaries for breathing rate
@@ -308,7 +308,7 @@ def rsp_rvt_harrison(
                 n_end = n_end[-1].squeeze()
 
             # Linearly interpolate from n_start to n_end
-            fr_phase[n_start:n_end] = np.linspace(fr_min, fr_max, num=n_end - n_start).squeeze()
+            fr_phase[n_start:n_end] = np.linspace(fr_min, fr_max, num=n_end - n_start).squeeze() # type: ignore
         # Filter out any high frequencies from phase-only signal
         fr_filt = scipy.signal.sosfiltfilt(d, np.pad(np.cos(fr_phase), n_pad, "symmetric"))
         fr_filt = fr_filt[n_pad : (len(fr_filt) - n_pad)]

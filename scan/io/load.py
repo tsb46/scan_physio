@@ -9,12 +9,10 @@ import warnings
 from typing import Literal, List, Tuple, Dict
 
 import nibabel as nb
-import nilearn
 import numpy as np
 
 from scan.io.file import Participant
 from scan.io import utils
-from scipy.stats import zscore
 
 
 class Gifti:
@@ -44,12 +42,12 @@ class Gifti:
         fp_gii_rh: str
     ):
         # Load the GIFTI files for both hemispheres
-        self.gii_lh = nb.load(fp_gii_lh)
-        self.gii_rh = nb.load(fp_gii_rh)
-        self.split_indx = self.gii_lh.darrays[0].data.shape[0]
+        self.gii_lh = nb.load(fp_gii_lh) # type: ignore
+        self.gii_rh = nb.load(fp_gii_rh) # type: ignore
+        self.split_indx = self.gii_lh.darrays[0].data.shape[0] # type: ignore
         # get # of vertices per hemisphere
-        self.lh_nvert = self.gii_lh.darrays[0].data.shape[0]
-        self.rh_nvert = self.gii_rh.darrays[0].data.shape[0]
+        self.lh_nvert = self.gii_lh.darrays[0].data.shape[0] # type: ignore
+        self.rh_nvert = self.gii_rh.darrays[0].data.shape[0] # type: ignore
         if self.lh_nvert != self.rh_nvert:
             raise ValueError(
                 'left and right hemispheres should have same number of vertices'
@@ -61,7 +59,7 @@ class Gifti:
         """
         # loop through samples and concatenate into one array
         combined_data = []
-        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays):
+        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays): # type: ignore
             # Access the data arrays in the GIFTI files
             data_left = lh_d.data
             data_right = rh_d.data
@@ -76,7 +74,7 @@ class Gifti:
         # loop through arrays and return as separate arrays
         lh_data = []
         rh_data = []
-        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays):
+        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays): # type: ignore
             lh_data.append(lh_d.data)
             rh_data.append(rh_d.data)
         return np.array(lh_data), np.array(rh_data)
@@ -145,7 +143,7 @@ class DatasetLoad:
     def __init__(
         self,
         dataset: Literal['vanderbilt'],
-        subj_filt: List[str] | List[Tuple[str,str]] = None,
+        subj_filt: List[str] | List[Tuple[str,str]] | None = None,
         physio_dir: str = 'proc1_physio', # last output of physio pipeline
         func_dir: str = 'proc6_surfacelr', # last output of func pipeline
     ):
@@ -165,7 +163,7 @@ class DatasetLoad:
 
     def load(
         self,
-        data_type: Tuple[str, str] | Literal['func', 'physio'] = None,
+        data_type: Tuple[str, str] | None = None,
         concat: bool = True,
         verbose: bool = True,
         norm: Literal['zscore', 'demean', None] = 'zscore',
@@ -174,8 +172,8 @@ class DatasetLoad:
         physio_low_pass: bool = False,
         physio_high_pass: bool = False,
         input_mask: bool = False,
-        lh_roi_masks: List[str] = None,
-        rh_roi_masks: List[str] = None
+        lh_roi_masks: List[str] | None= None,
+        rh_roi_masks: List[str] | None = None
     ) -> Tuple[dict, Gifti]:
         """
         Iteratively load scan data and concatenate for group
@@ -249,17 +247,17 @@ class DatasetLoad:
         """
         # if data_type is not passed, set to all data types
         if data_type is None:
-            data_type = ['func', 'physio']
+            data_type = ('func', 'physio')
         # if data_type is passed as str, convert to list
         if isinstance(data_type, str):
-            data_type = [data_type]
+            data_type = (data_type)
         # check if data_type is valid
         if not all(d in ['func', 'physio'] for d in data_type):
             raise ValueError(f'data type {data_type} is not available')
 
         # if roi_masks are passed, load them
         if input_mask:
-            lh_roi, rh_roi = self._load_masks(lh_roi_masks, rh_roi_masks)
+            lh_roi, rh_roi = self._load_masks(lh_roi_masks, rh_roi_masks) # type: ignore
         else:
             if lh_roi_masks is not None or rh_roi_masks is not None:
                 warnings.warn('roi masks are passed, but input_mask is False. ROI masks will be ignored.')
@@ -288,7 +286,8 @@ class DatasetLoad:
                 print(f'loading scan: subj: {subj} ses: {ses}')
             # loop through data modalities, load data and append to list
             data_out, func_gii = self.load_scan(
-                subj=subj, ses=ses, data=data_type,
+                subj=subj, ses=str(ses), 
+                data=data_type,
                 norm=norm,
                 func_low_pass=func_low_pass,
                 func_high_pass=func_high_pass,
@@ -309,20 +308,20 @@ class DatasetLoad:
         if concat:
             output = self._concat(data=data_type, data_dict=output)
 
-        return output, func_gii
+        return output, func_gii # type: ignore
 
     def load_scan(
         self,
         subj: str,
         ses: str,
-        data: Tuple[Literal['func', 'physio']]  = ('func', 'physio'),
+        data: Tuple[str, str] | Tuple[str] | str  = ('func', 'physio'),
         norm: Literal['zscore', 'demean', None] = 'zscore',
         func_low_pass: bool = False,
         func_high_pass: bool = False,
         physio_low_pass: bool = False,
         physio_high_pass: bool = False,
-        roi_lh_masks: Dict[str,np.ndarray] = None,
-        roi_rh_masks: Dict[str, np.ndarray] = None,
+        roi_lh_masks: Dict[str,np.ndarray] | None = None,
+        roi_rh_masks: Dict[str, np.ndarray] | None = None,
         input_mask: bool = False
     ) -> Tuple[dict, Gifti]:
         """
@@ -372,7 +371,7 @@ class DatasetLoad:
         """
         # if data is passed as str, convert to list
         if isinstance(data, str):
-            data = [data]
+            data = (data,)
         # check data modality labels
         for d in data:
             if d not in ['func', 'physio']:
@@ -405,8 +404,8 @@ class DatasetLoad:
                 if input_mask:
                     func_data = self._extract_roi(
                         func_gii,
-                        roi_lh_masks,
-                        roi_rh_masks
+                        roi_lh_masks, # type: ignore
+                        roi_rh_masks # type: ignore
                     )
                 else:
                     func_data = func_gii.load()
@@ -447,7 +446,7 @@ class DatasetLoad:
                             physio = utils.norm(physio, norm=norm)
                         output[d][p_out] = physio
 
-        return output, func_gii
+        return output, func_gii # type: ignore
 
     def _extract_roi(
         self,
@@ -509,8 +508,8 @@ class DatasetLoad:
         if not all(os.path.exists(roi_mask) for roi_mask in rh_roi_mask_fps):
             raise ValueError('rh_roi_masks must be valid file paths')
         # load roi masks
-        lh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in lh_roi_mask_fps]
-        rh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in rh_roi_mask_fps]
+        lh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in lh_roi_mask_fps] # type: ignore
+        rh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in rh_roi_mask_fps] # type: ignore
         # check if roi masks are valid
         utils.check_roi_masks(lh_roi, rh_roi)
         # convert to boolean mask
@@ -524,9 +523,9 @@ class DatasetLoad:
         }
         return lh_roi_mask, rh_roi_mask
 
-    def _concat(
+    def _concat(    
         self,
-        data: Tuple[Literal['func', 'physio']],
+        data: Tuple[str, str],
         data_dict: dict
     ) -> dict:
         """

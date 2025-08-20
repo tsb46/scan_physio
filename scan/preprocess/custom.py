@@ -6,7 +6,7 @@ import nibabel as nb
 import numpy as np
 
 from nibabel.cifti2.cifti2_axes import SeriesAxis
-from nibabel.cifti2 import Cifti2Header
+from nibabel.cifti2 import Cifti2Header # type: ignore
 
 
 def framewise_displacement(
@@ -71,10 +71,10 @@ def trim_cifti(
         Number of timepoints to trim from the beginning
     """
     # Load the CIFTI file
-    img = nb.load(fp)
+    img = nb.load(fp) # type: ignore
     
     # Get data and header information
-    data = img.get_fdata()
+    data = img.get_fdata() # type: ignore
     
     # Trim the first n_trim timepoints, assume time is the first dimension
     trimmed_data = data[n_trim:, ...]
@@ -84,11 +84,11 @@ def trim_cifti(
     header = img.header.copy()
     
     # Update the axes information, assume time is the first dimension
-    old_size = header.get_axis(0).size
+    old_size = header.get_axis(0).size # type: ignore
     new_size = old_size - n_trim
     
     # Create a new Series axis with updated size
-    old_series_axis = header.get_axis(0)
+    old_series_axis = header.get_axis(0) # type: ignore
     new_series_axis = SeriesAxis(
         start=old_series_axis.start,
         step=old_series_axis.step,
@@ -98,11 +98,11 @@ def trim_cifti(
     
     # Create a new header with the updated axis
     new_header = Cifti2Header.from_axes(
-        axes=[new_series_axis, header.get_axis(1)]
+        axes=[new_series_axis, header.get_axis(1)] # type: ignore
     )
     
     # Create the new image with updated header
-    new_img = nb.Cifti2Image(trimmed_data, new_header, img.nifti_header)
+    new_img = nb.Cifti2Image(trimmed_data, new_header, img.nifti_header) # type: ignore
 
     # Save the new image
     new_img.to_filename(fp_out)
