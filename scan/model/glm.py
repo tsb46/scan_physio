@@ -382,7 +382,7 @@ class MultivariateDistributedLagModel:
                 neg_nlags=self.neg_nlags,
                 n_knots=self.n_knots,
                 knots=self.knots if self.knots is not None else None,
-                basis=self.basis_type # type: ignore
+                basis_type=self.basis_type # type: ignore
             )
             basis.fit(X[:, [i]])
             self.bases.append(basis)
