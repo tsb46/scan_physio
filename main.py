@@ -15,6 +15,8 @@ cortical time series.
 4) ROI-based multivariate analysis of physiological signals regressed onto
 cortical time series. 
 
+5) Complex PCA analysis of functional MRI data.
+
 Note, for the Vanderbilt dataset, the respiratory belt signal had lost signal at certain
 points in time. These time points are identified and removed from the analysis using a 
 weighting vector.
