@@ -35,6 +35,7 @@ from scan.model.glm import (
     DistributedLagModel, 
     MultivariateDistributedLagModel
 )
+from scan.model.complex_pca import ComplexPCA
 
 # OUTPUT DIRECTORY
 OUT_DIRECTORY = 'results/main'
@@ -120,7 +121,19 @@ def main(analysis: str, out_dir: str, physio: str):
     elif analysis == 'roi-multivariate':
         loader, data, gii = load_data(roi=True)
         roi_multivariate(data, gii, loader, physio, out_dir)
+    elif analysis == 'complex-pca':
+        loader, data, gii = load_data(roi=False)
+        complex_pca(data, gii, out_dir)
 
+
+def complex_pca(data: dict , gii: Gifti, out_dir: str):
+    # perform complex PCA on the functional data
+    cpca = ComplexPCA(n_components=5)
+    cpca_res = cpca.decompose(data['func'])
+    cpca_res.write(gii, file_prefix='vanderbilt_cpca', out_dir=out_dir)
+    for i in range(3):
+        cpca_recon = cpca.reconstruct(i)
+        cpca_recon.write(gii, file_prefix=f'vanderbilt_cpca_recon_n{i+1}', out_dir=out_dir)
 
 def roi_univariate(
     data: dict, 
@@ -422,7 +435,8 @@ if __name__ == '__main__':
             'whole-brain-univariate',
             'whole-brain-multivariate',
             'roi-univariate',
-            'roi-multivariate'
+            'roi-multivariate',
+            'complex-pca'
         ]
     )
     parser.add_argument(
