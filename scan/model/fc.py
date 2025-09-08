@@ -7,12 +7,13 @@ import numpy as np
 
 from sklearn.linear_model import LinearRegression
 
+from scan.io.write import FCStageResults
+
 # define sleep stages
 SLEEP_STAGES = {
     1: "alert",
     0: "intermediate",
-    -1: "drowsy_w_n1",
-    -2: "drowsy_sleep"
+    -1: "drowsy",
 }
 
 class FCModulation:
@@ -22,7 +23,8 @@ class FCModulation:
 
     Attributes
     ----------
-    sleep_stages : list[int]
+    sleep_stages : np.ndarray
+        1d array of sleep stages
         Sleep stages represented as integers:
         - 1 = VIGALL alert
         - 0 = VIGALL intermediate
@@ -34,46 +36,37 @@ class FCModulation:
 
     def __init__(
         self, 
-        sleep_stages: list[int],
-        reference_stage: int = 0
+        sleep_stages: np.ndarray
     ):
+        # convert sleep stage -2 to -1
+        sleep_stages = np.where(sleep_stages == -2, -1, sleep_stages)
         self.sleep_stages = sleep_stages
-        # get unique sleep states
-        self.unique_sleep_stages = np.unique(sleep_stages)
+        # get unique sleep stages
+        unique_sleep_stages = np.unique(sleep_stages)
         # get count of sleep stage occurrences
         self.sleep_stage_counts = np.unique(sleep_stages, return_counts=True)[1]
         # check that each sleep stage is represented in the data
         for stage in SLEEP_STAGES:
-            if stage not in self.unique_sleep_stages:
+            if stage not in unique_sleep_stages:
                 raise ValueError(f"Sleep stage {SLEEP_STAGES[stage]} is not represented in the data.")
-        
-        # check that reference stage is allowed
-        if reference_stage not in SLEEP_STAGES:
-            raise ValueError(f"Reference stage {reference_stage} is not a valid sleep stage.")
 
-        # create dummy matrix of sleep stage vectors
-        self.sleep_stage_matrix = np.zeros((len(self.sleep_stages), len(SLEEP_STAGES)))
-        self.sleep_stage_matrix_cols = []
-        col_i = 0
-        for stage in self.sleep_stages:
-            # skip reference stage
-            if stage != reference_stage:
-                # create mask of sleep stages
-                stage_indx = self.sleep_stages == stage
-                # set the corresponding column to 1 for the current stage
-                self.sleep_stage_matrix[stage_indx, col_i] = 1
-                col_i += 1
 
-    def fit(self, seed_ts: np.ndarray, func_data: np.ndarray) -> None:
+    def estimate_fc_modulation(self, seed_ts: np.ndarray, func_data: np.ndarray) -> FCStageResults:
         """
         Estimate the modulation of functional connectivity by sleep stages.
 
+        Parameters
+        ----------
         func_data : np.ndarray
             Functional MRI data: a 2D array where rows are time points and columns are
             time points.
         seed_ts: np.ndarray
             1d time series data for a seed region of interest (ROI).
 
+        Returns
+        -------
+        FCModulationResults
+            An object containing the results of the functional connectivity modulation analysis.
         """
         # check that seed_ts and func_data have the same number of time points
         if len(seed_ts) != func_data.shape[0]:
@@ -85,19 +78,21 @@ class FCModulation:
         if len(self.sleep_stages) != func_data.shape[0]:
             raise ValueError("sleep_stages must have the same number of time points as func_data.")
 
-        # create interaction matrix of seed and sleep stage vectors
-        interaction_matrix = np.zeros(self.sleep_stage_matrix.shape)
-        for i in range(self.sleep_stage_matrix.shape[1]):
-            interaction_matrix[:, i] = seed_ts * self.sleep_stage_matrix[:, i]
-        
-        # create design matrix from seed_ts, sleep stage matrix and interaction matrix
-        self.design_matrix = np.hstack(
-            [seed_ts, self.sleep_stage_matrix, interaction_matrix]
+        # Loop through sleep stages and compute seed-based functional connectivity
+        fc_stages = []
+        stage_labels = []
+        for stage in SLEEP_STAGES:
+            # create mask for current sleep stage
+            stage_mask = self.sleep_stages == stage
+            # fit linear regression model
+            self.model = LinearRegression()
+            self.model.fit(seed_ts[stage_mask], func_data[stage_mask])
+            fc_stages.append(self.model.coef_)
+            stage_labels.append(SLEEP_STAGES[stage])
+
+        # return results
+        return FCStageResults(
+            fc_stages=fc_stages,
+            stage_labels=stage_labels
         )
-        # get indices of interaction terms of design matrix
-        self.interaction_indices = np.arange(
-            seed_ts.shape[1] + self.sleep_stage_matrix.shape[1], self.design_matrix.shape[1]
-        )
-        # fit linear regression model
-        self.model = LinearRegression()
-        self.model.fit(self.design_matrix, func_data)
+

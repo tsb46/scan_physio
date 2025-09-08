@@ -4,7 +4,7 @@ Module for writing analysis results to func.gii.
 import pickle
 import os
 
-from typing import Literal
+from typing import Literal, List
 
 import nibabel as nb
 import numpy as np
@@ -13,44 +13,10 @@ from nibabel.gifti import (
     GiftiDataArray, #type: ignore
     GiftiLabel, #type: ignore
     GiftiLabelTable, #type: ignore
-) 
+)
+from sklearn.linear_model import LinearRegression
 
 from scan.io.load import Gifti
-
-
-class ClusterResults:
-    """
-    Class for storing results of clustering. Provides
-    utilities for writing cluster labels to pickle and func.gii files.
-    """
-
-    def __init__(self, cluster_labels: np.ndarray, cluster_params: dict):
-        # if cluster_labels is a 1D array, convert to 2D array
-        if cluster_labels.ndim == 1:
-            cluster_labels = cluster_labels[np.newaxis,:]
-        self.cluster_labels = cluster_labels
-        self.cluster_params = cluster_params
-
-    def write(
-        self,
-        gii_params: Gifti,
-        file_prefix: str = 'cluster_out',
-        out_dir: str | None = None
-    ) -> None:
-        """
-        Write out cluster labels to pickle and func.gii files.
-        """
-        # set output prefix for file paths
-        if out_dir is None:
-            out_dir = os.getcwd()
-
-        out_prefix = f'{out_dir}/{file_prefix}'
-        # write out cluster params
-        with open(f'{out_prefix}.pkl', 'wb') as f:
-            pickle.dump(self.cluster_params, f)
-
-        # write out cluster labels to label.gii
-        write_label_gii(self.cluster_labels, gii_params, out_prefix)
 
         
 class DistributedLagModelPredResults:
@@ -58,7 +24,7 @@ class DistributedLagModelPredResults:
     Class for storing predictions of distributed lag modeling. Provides
     utilities for writing predicted time courses to func.gii files.
 
-    Parameters
+    Attributes
     ----------
     pred_func: np.ndarray
         predicted time courses from dlm model represented as an ndarray
@@ -120,7 +86,7 @@ class ComplexPCAResults:
     Class for storing results of complex-valued PCA. Provides
     utilities for writing complex-valued PCA results to func.gii files.
 
-    Parameters
+    Attributes
     ----------
     pc_scores: np.ndarray
         the PC scores of the complex-valued PCA model
@@ -189,7 +155,7 @@ class ComplexPCAReconResults:
     Class for storing results of complex-valued PCA reconstruction of spatiotemporal patterns. 
     Provides utilities for writing reconstructed time courses to func.gii files.
 
-    Parameters
+    Attributes
     ----------
     bin_timepoints: np.ndarray
         the reconstructed time courses of the complex-valued PCA model
@@ -222,6 +188,51 @@ class ComplexPCAReconResults:
         
         # write out reconstructed time courses to func.gii
         write_func_gii(self.bin_timepoints, gii_params, out_prefix)
+
+class FCStageResults:
+    """
+    Class for storing results of functional connectivity by sleep stages.
+
+    Attributes
+    ----------
+    sleep_stages: List[str]
+       the non-reference sleep stages to estimate functional connectivity for
+    sleep_stage_indices: List[int]
+       the indices of the non-reference sleep stages in the sleep_stages array. Should be correspond
+       to the same order as the sleep_stages list.
+    model: LinearRegression
+        The linear regression model used for estimating functional connectivity.
+    seed_ts_indx: int
+        The index of the seed time series in the functional data. Should always be the first column (0). Default is 0.
+    """
+
+    def __init__(
+        self, 
+        fc_stages: List[np.ndarray],
+        stage_labels: List[str]
+    ):
+        self.fc_stages = fc_stages
+        self.stage_labels = stage_labels
+
+    def write(
+        self,
+        gii_params: Gifti,
+        file_prefix: str | None = None,
+        out_dir: str | None = None
+    ) -> None:
+        """
+        Write out functional connectivity modulation results to func.gii file.
+        """
+        # set output prefix for file paths
+        if out_dir is None:
+            out_dir = os.getcwd()
+
+        out_prefix = f'{out_dir}/{file_prefix}'
+
+        # iterate through sleep stages and write out modulation results
+        for stage, fc in zip(self.stage_labels, self.fc_stages):
+            # write out functional connectivity modulation results to func.gii
+            write_func_gii(fc[np.newaxis, :], gii_params, f'{out_prefix}_{stage}')
 
 
 class WindowAverageResults:
