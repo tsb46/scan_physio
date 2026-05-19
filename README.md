@@ -6,25 +6,24 @@ In a recent manuscript by Gordon et al. (2023), a set of brain regions were iden
 In an open review by the Diedrichsen lab  (https://www.diedrichsenlab.org/BrainDataScience/or_gordon2023/index.htm), it is suggested that the co-activation of these brain regions may reflect muscle synergies induced by respiratory motion - i.e. abdmonimal, larynx and upper face muscular activity. To further assess these claims we analyzed the relationship between these regions and the amplitude of respiratory belt signals. This analysis was conduced on a small subset of randomly sampled HCP subjects (N=20) with respiratory belt recordings of sufficient quality. This code contains a set of command-line python scripts for replicating the analysis. The code was run with Python 3.11.3.
 
 # Installation
-To run the code in this repository, several Python packages must be installed in your virtual environment with the following command:
+This repository uses `uv` for environment and dependency management. To create the virtual environment and install the project with the locked dependencies, run:
 ```
-pip install -r requirements.txt
-```
-
-# Pulling HCP data
-To pull HCP resting-state recordings (and physio), we use the boto3 package. Simply run the following in your terminal to download the data:
-```
-python pull_data.py
+uv sync
 ```
 
-# Preprocessing Data
-In the pull_data.py script, we pulled MSMAll-registered cifti files for the HCP resting-state recordings that have been previously preprocessed with ICA-FIX by the HCP team. Additional preprocessing is implemented for surface smoothing (4mm FWHM), z-score normalization (of vertex time courses) and band-pass filtering into the conventional resting-state BOLD frequency range (0.01-0.1Hz). To run the preprocessing script, run the following command in your terminal:
+# Exporting requirements.txt
+The `requirements.txt` file is generated from `uv.lock`. If you need a pip-compatible export, regenerate it with:
 ```
-python preprocess.py
+uv export --format requirements-txt > requirements.txt
 ```
 
-# Command-Line scripts
-To replicate our analyses, a set of command-line Python scripts are provided. The command-line interface comes with help documentation for each parameter. To replicate our analyses, run the following commands:
+# Command-Line Usage
+The current analysis entry point is `main.py`. To view the available arguments, run:
+```
+uv run python main.py --help
+```
+
+To replicate the supported analyses, use one of the following commands:
 
 * For principal component analysis (the first principal component corresponds to the 'global signal'):
 ```
