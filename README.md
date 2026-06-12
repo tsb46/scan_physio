@@ -11,10 +11,20 @@ This repository uses `uv` for environment and dependency management. To create t
 uv sync
 ```
 
-# Exporting requirements.txt
-The `requirements.txt` file is generated from `uv.lock`. If you need a pip-compatible export, regenerate it with:
+# Visualization Scripts
+Static surface snapshots can be rendered from paired GIFTI metric files with:
 ```
-uv export --format requirements-txt > requirements.txt
+uv run python scripts/gifti_snapshot.py --input path/to/lh.func.gii --index 0 --output snapshot.png
+```
+
+Surface movies can be rendered with the new GIFTI movie companion script:
+```
+uv run python scripts/gifti_movie.py --input path/to/lh.func.gii --output movie.mp4
+```
+
+Movie encoding uses `ffmpeg`. The script first tries a system `ffmpeg`, then falls back to the optional `imageio-ffmpeg` package. To install that fallback dependency, sync with the `viz` extra:
+```
+uv sync --extra viz
 ```
 
 # Command-Line Usage
