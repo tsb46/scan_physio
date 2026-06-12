@@ -20,5 +20,14 @@ dependencies = [
     "tedana==24.0.1",
 ]
 
+[project.optional-dependencies]
+viz = [
+    "imageio-ffmpeg",
+]
+templates = [
+    "neuromaps>=0.0.6",
+    "templateflow",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["scan"]
