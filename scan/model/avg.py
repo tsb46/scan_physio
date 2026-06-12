@@ -2,20 +2,25 @@
 Module for calculating windowed averages of functional MRI signals
 around physiological events
 """
+
+import os
+import pickle
+
 from typing import List, Dict, Tuple, Optional, Union
 from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal
 
-from scan.io.write import WindowAverageResults
+from scan.io.load import Gifti
+from scan.io.write import write_func_gii
 
 
 @dataclass
 class EventFinderResults:
     """
     Results from event finding in physiological signals
-    
+
     Parameters
     ----------
     events : Dict[str, List[int]]
@@ -25,6 +30,7 @@ class EventFinderResults:
     event_finder_params : Dict
         Parameters used for event finding
     """
+
     events: Dict[str, List[int]]
     co_localization_stats: Dict[str, Dict]
     event_finder_params: Dict
@@ -33,7 +39,7 @@ class EventFinderResults:
 class EventFinder:
     """
     Detect physiological events using peak detection algorithms.
-    
+
     This class provides methods to find peaks in physiological signals
     that exceed given thresholds, with optional parameters to tune
     the peak-finding algorithm. It can handle multiple physiological
@@ -49,11 +55,11 @@ class EventFinder:
         width: Optional[Union[int, Dict[str, int]]] = None,
         rel_height: float = 0.5,
         plateau_size: Optional[int] = None,
-        co_localization_tolerance: int | None = None
+        co_localization_tolerance: int | None = None,
     ):
         """
         Initialize EventFinder with peak detection parameters.
-        
+
         Parameters
         ----------
         threshold : float or Dict[str, float], optional
@@ -94,13 +100,13 @@ class EventFinder:
         self.co_localization_tolerance = co_localization_tolerance
 
     def find_events(
-        self, 
+        self,
         signals: Union[np.ndarray, Dict[str, np.ndarray]],
         mask: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None,
     ) -> EventFinderResults:
         """
         Find events in physiological signals using peak detection.
-        
+
         Parameters
         ----------
         signals : np.ndarray or Dict[str, np.ndarray]
@@ -111,7 +117,7 @@ class EventFinder:
             Binary mask (1s and 0s) to exclude peaks at timepoints with 0 values.
             If dict, maps signal names to specific masks. Must match signal length.
             If None, no masking is applied.
-            
+
         Returns
         -------
         EventFinderResults
@@ -119,46 +125,45 @@ class EventFinder:
         """
         if isinstance(signals, np.ndarray):
             # Single signal case
-            signals = {'signal': signals}
-        
+            signals = {"signal": signals}
+
         events = {}
-        
+
         # Find peaks for each signal
         for signal_name, signal_data in signals.items():
             if signal_data.ndim != 1:
                 raise ValueError(f"Signal {signal_name} must be 1D array")
-            
+
             # Get parameters for this signal
             threshold = self._get_param_for_signal(self.threshold, signal_name)
             height = self._get_param_for_signal(self.height, signal_name)
             prominence = self._get_param_for_signal(self.prominence, signal_name)
             width = self._get_param_for_signal(self.width, signal_name)
-            
+
             # Find peaks using scipy.signal.find_peaks
-            peak_kwargs = {
-                'distance': self.distance,
-                'rel_height': self.rel_height
-            }
-            
+            peak_kwargs = {"distance": self.distance, "rel_height": self.rel_height}
+
             if threshold is not None:
-                peak_kwargs['threshold'] = threshold
+                peak_kwargs["threshold"] = threshold
             if height is not None:
-                peak_kwargs['height'] = height
+                peak_kwargs["height"] = height
             if prominence is not None:
-                peak_kwargs['prominence'] = prominence
+                peak_kwargs["prominence"] = prominence
             if width is not None:
-                peak_kwargs['width'] = width
+                peak_kwargs["width"] = width
             if self.plateau_size is not None:
-                peak_kwargs['plateau_size'] = self.plateau_size
-            
+                peak_kwargs["plateau_size"] = self.plateau_size
+
             peaks, properties = signal.find_peaks(signal_data, **peak_kwargs)
-            
+
             # Apply mask if provided
             if mask is not None:
                 # Validate mask
                 if len(mask) != len(signal_data):
-                    raise ValueError(f"Mask length ({len(mask)}) must match signal length ({len(signal_data)}) for signal {signal_name}")
-                
+                    raise ValueError(
+                        f"Mask length ({len(mask)}) must match signal length ({len(signal_data)}) for signal {signal_name}"
+                    )
+
                 # Filter peaks to only include those where mask is 1
                 if len(peaks) > 0:
                     valid_peaks = []
@@ -168,33 +173,33 @@ class EventFinder:
                     peaks = np.array(valid_peaks)
                 else:
                     peaks = np.array([])
-            
+
             events[signal_name] = peaks.tolist()
-        
+
         # Calculate co-localization statistics if multiple signals
         co_localization_stats = {}
         if len(signals) > 1:
             co_localization_stats = self._calculate_co_localization_stats(events)
-        
+
         # Prepare parameters for results
         event_finder_params = {
-            'threshold': self.threshold,
-            'height': self.height,
-            'distance': self.distance,
-            'prominence': self.prominence,
-            'width': self.width,
-            'rel_height': self.rel_height,
-            'plateau_size': self.plateau_size,
-            'co_localization_tolerance': self.co_localization_tolerance,
-            'mask': mask,
+            "threshold": self.threshold,
+            "height": self.height,
+            "distance": self.distance,
+            "prominence": self.prominence,
+            "width": self.width,
+            "rel_height": self.rel_height,
+            "plateau_size": self.plateau_size,
+            "co_localization_tolerance": self.co_localization_tolerance,
+            "mask": mask,
         }
-        
+
         return EventFinderResults(events, co_localization_stats, event_finder_params)
 
     def _get_param_for_signal(
-        self, 
-        param: Union[float, Dict[str, float], Dict[str, int], None], 
-        signal_name: str
+        self,
+        param: Union[float, Dict[str, float], Dict[str, int], None],
+        signal_name: str,
     ) -> Optional[float]:
         """Helper method to get parameter value for a specific signal."""
         if param is None:
@@ -205,17 +210,16 @@ class EventFinder:
             return param
 
     def _calculate_co_localization_stats(
-        self, 
-        events: Dict[str, List[int]]
+        self, events: Dict[str, List[int]]
     ) -> Dict[str, Dict]:
         """
         Calculate statistics about co-localized events between signals.
-        
+
         Parameters
         ----------
         events : Dict[str, List[int]]
             Dictionary mapping signal names to lists of event indices
-            
+
         Returns
         -------
         Dict[str, Dict]
@@ -223,12 +227,12 @@ class EventFinder:
         """
         signal_names = list(events.keys())
         co_localization_stats = {}
-        
+
         # Calculate pairwise co-localization statistics
         for i, signal1 in enumerate(signal_names):
-            for j, signal2 in enumerate(signal_names[i+1:], i+1):
+            for j, signal2 in enumerate(signal_names[i + 1 :], i + 1):
                 pair_name = f"{signal1}_vs_{signal2}"
-                
+
                 # Find co-localized events within a tolerance window
                 if self.co_localization_tolerance is not None:
                     tolerance = self.co_localization_tolerance
@@ -238,35 +242,36 @@ class EventFinder:
                 co_localized = self._find_co_localized_events(
                     events[signal1], events[signal2], tolerance
                 )
-                
+
                 # Calculate statistics
                 total_events_1 = len(events[signal1])
                 total_events_2 = len(events[signal2])
                 co_localized_count = len(co_localized)
-                
+
                 stats = {
-                    'total_events_signal1': total_events_1,
-                    'total_events_signal2': total_events_2,
-                    'co_localized_events': co_localized_count,
-                    'co_localized_indices': co_localized,
-                    'co_localization_rate_signal1': co_localized_count / total_events_1 if total_events_1 > 0 else 0,
-                    'co_localization_rate_signal2': co_localized_count / total_events_2 if total_events_2 > 0 else 0,
-                    'tolerance_window': tolerance,
+                    "total_events_signal1": total_events_1,
+                    "total_events_signal2": total_events_2,
+                    "co_localized_events": co_localized_count,
+                    "co_localized_indices": co_localized,
+                    "co_localization_rate_signal1": co_localized_count / total_events_1
+                    if total_events_1 > 0
+                    else 0,
+                    "co_localization_rate_signal2": co_localized_count / total_events_2
+                    if total_events_2 > 0
+                    else 0,
+                    "tolerance_window": tolerance,
                 }
-                
+
                 co_localization_stats[pair_name] = stats
-        
+
         return co_localization_stats
 
     def _find_co_localized_events(
-        self, 
-        events1: List[int], 
-        events2: List[int], 
-        tolerance: int
+        self, events1: List[int], events2: List[int], tolerance: int
     ) -> List[Tuple[int, int]]:
         """
         Find events that are co-localized within a tolerance window.
-        
+
         Parameters
         ----------
         events1 : List[int]
@@ -275,19 +280,19 @@ class EventFinder:
             Event indices from second signal
         tolerance : int
             Tolerance window in samples
-            
+
         Returns
         -------
         List[Tuple[int, int]]
             List of co-localized event pairs (event1_idx, event2_idx)
         """
         co_localized = []
-        
+
         for event1 in events1:
             for event2 in events2:
                 if abs(event1 - event2) <= tolerance:
                     co_localized.append((event1, event2))
-        
+
         return co_localized
 
     def get_lone_events(
@@ -315,11 +320,17 @@ class EventFinder:
         """
         if signal_name not in events:
             raise ValueError(f"Signal '{signal_name}' not found in events")
-        
+
         all_other_signals = [k for k in events if k != signal_name]
         lone_events = []
-        tol = tolerance if tolerance is not None else (
-            self.co_localization_tolerance if self.co_localization_tolerance is not None else self.distance
+        tol = (
+            tolerance
+            if tolerance is not None
+            else (
+                self.co_localization_tolerance
+                if self.co_localization_tolerance is not None
+                else self.distance
+            )
         )
         for event in events[signal_name]:
             is_lone = True
@@ -360,8 +371,14 @@ class EventFinder:
         for name in signal_names:
             if name not in events:
                 raise ValueError(f"Signal '{name}' not found in events")
-        tol = tolerance if tolerance is not None else (
-            self.co_localization_tolerance if self.co_localization_tolerance is not None else self.distance
+        tol = (
+            tolerance
+            if tolerance is not None
+            else (
+                self.co_localization_tolerance
+                if self.co_localization_tolerance is not None
+                else self.distance
+            )
         )
         # Start with all events from the first signal
         base_events = events[signal_names[0]]
@@ -385,6 +402,51 @@ class EventFinder:
         return joint_events
 
 
+class WindowAverageResults:
+    """
+    Class for storing results of windowed averaging. Provides
+    utilities for writing averaged time courses to func.gii files.
+    """
+
+    def __init__(self, avg_func: np.ndarray, window_average_params: dict):
+        self.avg_func = avg_func
+        self.window_average_params = window_average_params
+
+    def write(
+        self,
+        gii_params: Gifti,
+        file_prefix: str = "window_avg_out",
+        out_dir: str | None = None,
+    ) -> None:
+        """
+        Write out averaged time courses to func.gii file.
+
+        Parameters
+        ----------
+        gii_params: Gifti
+            Gifti class that contains a loaded func.gii file. Used for
+            writing out func.gii in the same format as the input func.gii.
+            If running group-level analysis, this is returned in the
+            Dataset.load() method.
+        file_prefix: str
+            Optional - file path prefix for pickle and func.gii file
+        out_dir: str
+            Optional - output directory for writing files. If None (default),
+            write out to current working directory.
+        """
+        # set output prefix for file paths
+        if out_dir is None:
+            out_dir = os.getcwd()
+
+        out_prefix = f"{out_dir}/{file_prefix}"
+        # write out window average params
+        with open(f"{out_prefix}.pkl", "wb") as f:
+            pickle.dump(self.window_average_params, f)
+
+        # write out averaged time courses to func.gii
+        write_func_gii(self.avg_func, gii_params, out_prefix)
+
+
 class WindowAverage:
     """
     Calculate windowed averages of functional MRI signals
@@ -392,7 +454,7 @@ class WindowAverage:
     """
 
     def __init__(
-        self, 
+        self,
         left_edge: int = 10,
         right_edge: int = 10,
     ):
@@ -411,21 +473,19 @@ class WindowAverage:
         self.right_edge = right_edge
 
     def calculate_avg(
-        self, 
-        func_data: np.ndarray, 
-        physio_events: List[int]
+        self, func_data: np.ndarray, physio_events: List[int]
     ) -> WindowAverageResults:
         """
         Calculate windowed averages of functional MRI signals
         around physiological events
-        
+
         Parameters
         ----------
         func_data : np.ndarray
             Functional MRI data with shape (timepoints, vertices)
         physio_events : List[int]
             List of event indices around which to calculate windows
-            
+
         Returns
         -------
         WindowAverageResults
@@ -434,10 +494,10 @@ class WindowAverage:
         # Input validation
         if func_data.ndim != 2:
             raise ValueError(f"func_data must be 2D array, got shape {func_data.shape}")
-        
+
         if not isinstance(physio_events, list):
             raise ValueError("physio_events must be a list")
-        
+
         # Validate event indices
         if physio_events:
             max_event = max(physio_events)
@@ -445,8 +505,10 @@ class WindowAverage:
             if min_event < 0:
                 raise ValueError(f"Event indices must be non-negative, got {min_event}")
             if max_event >= func_data.shape[0]:
-                raise ValueError(f"Event index {max_event} exceeds data length {func_data.shape[0]}")
-        
+                raise ValueError(
+                    f"Event index {max_event} exceeds data length {func_data.shape[0]}"
+                )
+
         if not physio_events:
             # Handle empty events list
             window_size = self.left_edge + self.right_edge + 1
@@ -465,20 +527,17 @@ class WindowAverage:
             w_avg = np.nanmean(windows, axis=0)
 
         window_average_params = {
-            'left_edge': self.left_edge,
-            'right_edge': self.right_edge,
-            'physio_events': physio_events,
-            'num_events': len(physio_events),
+            "left_edge": self.left_edge,
+            "right_edge": self.right_edge,
+            "physio_events": physio_events,
+            "num_events": len(physio_events),
         }
 
         return WindowAverageResults(w_avg, window_average_params)
 
 
 def extract_range(
-    array: np.ndarray, 
-    center: int, 
-    left_edge: int, 
-    right_edge: int
+    array: np.ndarray, center: int, left_edge: int, right_edge: int
 ) -> np.ndarray:
     """
     Extract a range of rows from an array with NaN padding for out-of-bound indices
@@ -502,16 +561,16 @@ def extract_range(
     # Input validation
     if array.ndim != 2:
         raise ValueError(f"array must be 2D, got shape {array.shape}")
-    
+
     if not isinstance(center, int):
         raise ValueError(f"center must be an integer, got {type(center)}")
-    
+
     if not isinstance(left_edge, int) or not isinstance(right_edge, int):
         raise ValueError("left_edge and right_edge must be integers")
-    
+
     num_rows, num_cols = array.shape
     range_size = right_edge - left_edge + 1
-    
+
     # Create a NaN-filled placeholder for the range
     padded_range = np.full((range_size, num_cols), np.nan)
 
@@ -524,5 +583,5 @@ def extract_range(
     # Insert valid rows into the padded range
     if end > start:  # Only insert if there are valid rows
         padded_range[insert_start:insert_end, :] = array[start:end, :]
-    
+
     return padded_range

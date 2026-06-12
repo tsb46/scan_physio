@@ -2,16 +2,83 @@
 Module for estimating the relationship between functional MRI signals
 and physio signals at successive temporal lags of the physio signal
 """
+
+import os
+import pickle
+
 from typing import List, Literal, Tuple
 
 import numpy as np
 
+from patsy import dmatrix  # type: ignore
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import Ridge
 
-from patsy import dmatrix # type: ignore
+from scan.io.load import Gifti
+from scan.io.write import write_func_gii
 
-from scan.io.write import DistributedLagModelPredResults
+
+class DistributedLagModelPredResults:
+    """
+    Class for storing predictions of distributed lag modeling. Provides
+    utilities for writing predicted time courses to func.gii files.
+
+    Attributes
+    ----------
+    pred_func: np.ndarray
+        predicted time courses from dlm model represented as an ndarray
+        with predicted time points in the rows and vertices in columns.
+
+    dlm_params: dict
+        the parameters used to fit the dlm model
+
+    Methods
+    -------
+    write(out_fp, out_dir=None):
+        write predicted time coureses to func.gii and dlm params to pickle
+
+    """
+
+    def __init__(self, pred_func: np.ndarray, dlm_params: dict):
+        self.pred_func = pred_func
+        self.dlm_params = dlm_params
+
+    def write(
+        self,
+        gii_params: Gifti,
+        file_prefix: str = "dlm_pred_out",
+        out_dir: str | None = None,
+    ) -> None:
+        """
+        Write out prediction results from dlm model to func.gii and pickle
+        file. The func.gii displayed the predicted fMRI values over the
+        predicted time span, and the pickle contains params passed to the
+        dlm class.
+
+        Parameters
+        ----------
+        gii_params: Gifti
+            Gifti class that contains a loaded func.gii file. Used for
+            writing out func.gii in the same format as the input func.gii.
+            If running group-level analysis, this is returned in the
+            Dataset.load() method.
+        out_fp_prefix: str
+            Optional - file path prefix for pickle and func.gii file
+        out_dir: str
+            Optional - output directory for writing files. If None (default),
+            write out to current working directory.
+        """
+        # set output prefix for file paths
+        if out_dir is None:
+            out_dir = os.getcwd()
+
+        out_prefix = f"{out_dir}/{file_prefix}"
+        # write out dlm pred params
+        with open(f"{out_prefix}.pkl", "wb") as f:
+            pickle.dump(self.dlm_params, f)
+
+        # write predicted time courses to func.gii
+        write_func_gii(self.pred_func, gii_params, out_prefix)
 
 
 class BSplineLagBasis(BaseEstimator, TransformerMixin):
@@ -29,7 +96,7 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
     nlags: int
         number of lags (shifts) of the signal in the forward direction
     nlags_neg: int
-        number of lags (shifts) of the signal in the negative direction. 
+        number of lags (shifts) of the signal in the negative direction.
         Must be a negative integer. This allows modeling the association between
         functional and physio signals where the functional leads the physio signal.
     n_knots: int
@@ -53,19 +120,20 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         rows and a single column (# of time points, 1).
 
     """
+
     def __init__(
-        self, 
-        nlags: int, 
-        neg_nlags: int = 0, 
+        self,
+        nlags: int,
+        neg_nlags: int = 0,
         n_knots: int = 5,
         knots: List[int] | None = None,
-        basis_type: Literal['cr','bs'] = 'bs'
+        basis_type: Literal["cr", "bs"] = "bs",
     ):
         if neg_nlags > 0:
             raise ValueError("neg_nlags must be a negative integer")
-        
+
         # specify array of lags
-        self.lags = np.arange(neg_nlags, nlags+1)
+        self.lags = np.arange(neg_nlags, nlags + 1)
         # specify knots parameters
         self.n_knots = n_knots
         self.knots = knots
@@ -86,15 +154,13 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         # create spline basis from sklearn SplineTransformer
         if self.knots is not None:
             self.basis = dmatrix(
-                f'{self.basis_type}(x, knots=self.knots) - 1',
-                {'x': self.lags}
+                f"{self.basis_type}(x, knots=self.knots) - 1", {"x": self.lags}
             )
         else:
             self.basis = dmatrix(
-                f'{self.basis_type}(x, df=self.n_knots) - 1',
-                {'x': self.lags}
+                f"{self.basis_type}(x, df=self.n_knots) - 1", {"x": self.lags}
             )
-    
+
         return self
 
     def transform(self, X: np.ndarray, y: np.ndarray | None = None) -> np.ndarray:
@@ -119,12 +185,9 @@ class BSplineLagBasis(BaseEstimator, TransformerMixin):
         # get number of splines
         n_splines = self.basis.shape[1]
         # allocate memory
-        lag_proj = np.empty(
-            (lagmat.shape[0], n_splines),
-            dtype=lagmat.dtype
-        )
-        for l in np.arange(n_splines):
-            lag_proj[:,l] = np.dot(lagmat, self.basis[:,l])
+        lag_proj = np.empty((lagmat.shape[0], n_splines), dtype=lagmat.dtype)
+        for lag in np.arange(n_splines):
+            lag_proj[:, lag] = np.dot(lagmat, self.basis[:, lag])
 
         return lag_proj
 
@@ -164,6 +227,7 @@ class DistributedLagModel:
     predict()
 
     """
+
     def __init__(
         self,
         nlags: int,
@@ -171,7 +235,7 @@ class DistributedLagModel:
         n_knots: int = 5,
         knots: List[int] | None = None,
         alpha: float = 0.01,
-        basis: Literal['cr','bs'] = 'bs'
+        basis: Literal["cr", "bs"] = "bs",
     ):
         # specify array of lags
         self.nlags = nlags
@@ -202,9 +266,11 @@ class DistributedLagModel:
         """
         # create B-spline basis across lags of physio signal
         self.basis = BSplineLagBasis(
-            nlags=self.nlags, neg_nlags=self.neg_nlags,
-            n_knots=self.n_knots, knots=self.knots, 
-            basis_type=self.basis_type # type: ignore
+            nlags=self.nlags,
+            neg_nlags=self.neg_nlags,
+            n_knots=self.n_knots,
+            knots=self.knots,
+            basis_type=self.basis_type,  # type: ignore
         )
         self.basis.fit(X)
         # project physio signal lags on B-spline basis
@@ -217,9 +283,9 @@ class DistributedLagModel:
         # fit Ridge regression model
         self.glm = Ridge(alpha=self.alpha, fit_intercept=False)
         self.glm.fit(
-            x_basis[~self.nan_mask], 
-            Y[~self.nan_mask], 
-            sample_weight=weights[~self.nan_mask]
+            x_basis[~self.nan_mask],
+            Y[~self.nan_mask],
+            sample_weight=weights[~self.nan_mask],
         )
         return self
 
@@ -228,7 +294,7 @@ class DistributedLagModel:
         lag_max: float | None = None,
         lag_min: float | None = None,
         n_eval: int = 30,
-        pred_val: float = 1.0
+        pred_val: float = 1.0,
     ) -> DistributedLagModelPredResults:
         """
         Evaluate the model at user-specified lags and values of the physio signal.
@@ -269,30 +335,28 @@ class DistributedLagModel:
         pred_lags = np.linspace(lag_min, lag_max, n_eval)
         # project lag vector onto B-spline basis
         pred_basis = dmatrix(
-            self.basis.basis.design_info,
-            {'x': pred_lags.reshape(-1, 1)}
+            self.basis.basis.design_info, {"x": pred_lags.reshape(-1, 1)}
         )
         # project prediction value on lag B-spline basis
         physio_pred = [
-            pred_val * pred_basis[:, l]
-            for l in range(pred_basis.shape[1])
-         ]
+            pred_val * pred_basis[:, lag] for lag in range(pred_basis.shape[1])
+        ]
         physio_pred = np.vstack(physio_pred).T
         # Get predictions from model
         pred_func = self.glm.predict(physio_pred)
         # package output in container object
         dlm_pred = DistributedLagModelPredResults(
-            pred_func = pred_func,
-            dlm_params = {
-                'lag_max': lag_max,
-                'lag_min': lag_min,
-                'n_eval': n_eval,
-                'pred_lags': pred_lags,
-                'basis_type': self.basis_type,
-            }
+            pred_func=pred_func,
+            dlm_params={
+                "lag_max": lag_max,
+                "lag_min": lag_min,
+                "n_eval": n_eval,
+                "pred_lags": pred_lags,
+                "basis_type": self.basis_type,
+            },
         )
         return dlm_pred
-    
+
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
         Predict functional MRI time courses from physio time courses.
@@ -308,12 +372,9 @@ class DistributedLagModel:
         # create nan mask for x_basis
         self.nan_mask = np.isnan(x_basis).any(axis=1)
         # initialize output func with NaNs
-        pred_func = np.full(
-            (x_basis.shape[0], self.glm.coef_.shape[0]),
-            np.nan
-        )
+        pred_func = np.full((x_basis.shape[0], self.glm.coef_.shape[0]), np.nan)
         # get predictions from model
-        pred_func[~self.nan_mask,:] = self.glm.predict(x_basis[~self.nan_mask])
+        pred_func[~self.nan_mask, :] = self.glm.predict(x_basis[~self.nan_mask])
         return pred_func
 
 
@@ -340,6 +401,7 @@ class MultivariateDistributedLagModel:
     basis : Literal['cr','bs']
         Basis type for the spline basis. 'cr' for natural spline, 'bs' for B-spline.
     """
+
     def __init__(
         self,
         nlags: int,
@@ -347,7 +409,7 @@ class MultivariateDistributedLagModel:
         n_knots: int = 5,
         knots: List[int] | None = None,
         alpha: float = 0.01,
-        basis: Literal['cr','bs'] = 'bs'
+        basis: Literal["cr", "bs"] = "bs",
     ):
         self.nlags = nlags
         if neg_nlags > 0:
@@ -373,7 +435,7 @@ class MultivariateDistributedLagModel:
             Weights for each time point. If None, all weights are set to 1.
         """
         self.n_signals = X.shape[1]
-        
+
         # Create basis for each signal
         self.bases = []
         for i in range(self.n_signals):
@@ -382,7 +444,7 @@ class MultivariateDistributedLagModel:
                 neg_nlags=self.neg_nlags,
                 n_knots=self.n_knots,
                 knots=self.knots if self.knots is not None else None,
-                basis_type=self.basis_type # type: ignore
+                basis_type=self.basis_type,  # type: ignore
             )
             basis.fit(X[:, [i]])
             self.bases.append(basis)
@@ -397,22 +459,22 @@ class MultivariateDistributedLagModel:
         # Fit Ridge regression
         self.glm = Ridge(alpha=self.alpha, fit_intercept=False)
         self.glm.fit(
-            self.tensor_basis[~self.nan_mask], 
-            Y[~self.nan_mask], 
-            sample_weight=weights[~self.nan_mask]
+            self.tensor_basis[~self.nan_mask],
+            Y[~self.nan_mask],
+            sample_weight=weights[~self.nan_mask],
         )
-        
+
         return self
 
     def _create_tensor_basis(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Create tensor product basis by taking outer product of all signal bases.
-        
+
         Parameters
         ----------
         X : np.ndarray
             Input signals with shape (n_timepoints, n_signals)
-            
+
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
@@ -427,7 +489,7 @@ class MultivariateDistributedLagModel:
         # Create tensor product basis
         tensor_basis = np.hstack(signal_bases)
         for i in range(len(signal_bases)):
-            for j in range(i+1, len(signal_bases)):
+            for j in range(i + 1, len(signal_bases)):
                 outer_product = self._outer_product(signal_bases[i], signal_bases[j])
                 tensor_basis = np.hstack([tensor_basis, outer_product])
 
@@ -439,14 +501,14 @@ class MultivariateDistributedLagModel:
     def _outer_product(self, basis1: np.ndarray, basis2: np.ndarray) -> np.ndarray:
         """
         Compute outer product of two basis matrices.
-        
+
         Parameters
         ----------
         basis1 : np.ndarray
             First basis matrix
         basis2 : np.ndarray
             Second basis matrix
-            
+
         Returns
         -------
         np.ndarray
@@ -455,24 +517,24 @@ class MultivariateDistributedLagModel:
         n_samples = basis1.shape[0]
         n_basis1 = basis1.shape[1]
         n_basis2 = basis2.shape[1]
-        
+
         outer_basis = np.zeros((n_samples, n_basis1 * n_basis2))
         for i in range(n_basis1):
             for j in range(n_basis2):
                 outer_basis[:, i * n_basis2 + j] = basis1[:, i] * basis2[:, j]
-                
+
         return outer_basis
 
     def evaluate(
         self,
         lag_max: float | None = None,
-        lag_min: float | None= None,
+        lag_min: float | None = None,
         n_eval: int = 30,
-        pred_vals: List[float] | None = None
+        pred_vals: List[float] | None = None,
     ) -> DistributedLagModelPredResults:
         """
         Evaluate the model at user-specified values of the physio signal.
-        
+
         Parameters
         ----------
         lag_max : float
@@ -483,7 +545,7 @@ class MultivariateDistributedLagModel:
             Number of evaluation points
         pred_vals : List[float]
             List of values for each signal to predict at. If None, uses 1.0 for all signals.
-            
+
         Returns
         -------
         DistributedLagModelPredResults
@@ -496,27 +558,25 @@ class MultivariateDistributedLagModel:
         else:
             if lag_min > 0:
                 raise ValueError("lag_min must be a negative integer")
-                
+
         if pred_vals is None:
-            pred_vals = [1.0] * self.n_signals # type: ignore
+            pred_vals = [1.0] * self.n_signals  # type: ignore
         elif len(pred_vals) != self.n_signals:
             raise ValueError(f"pred_vals must have length {self.n_signals}")
-            
+
         # Create evaluation points
         pred_lags = np.linspace(lag_min, lag_max, n_eval)
-        
+
         # Create prediction basis for each signal
         pred_bases = []
         for i, basis in enumerate(self.bases):
             # Create array with n_eval rows of the prediction value
             pred_basis = dmatrix(
-                basis.basis.design_info,
-                {'x': pred_lags.reshape(-1, 1)}
+                basis.basis.design_info, {"x": pred_lags.reshape(-1, 1)}
             )
             # project prediction value on lag B-spline basis
             physio_pred = [
-                pred_vals[i] * pred_basis[:, l]
-                for l in range(pred_basis.shape[1])
+                pred_vals[i] * pred_basis[:, lag] for lag in range(pred_basis.shape[1])
             ]
             physio_pred = np.vstack(physio_pred).T
             pred_bases.append(physio_pred)
@@ -524,26 +584,26 @@ class MultivariateDistributedLagModel:
         # Create tensor product basis
         pred_tensor_basis = np.hstack(pred_bases)
         for i in range(len(pred_bases)):
-            for j in range(i+1, len(pred_bases)):
+            for j in range(i + 1, len(pred_bases)):
                 outer_product = self._outer_product(pred_bases[i], pred_bases[j])
                 pred_tensor_basis = np.hstack([pred_tensor_basis, outer_product])
 
         # Get predictions
         pred_func = self.glm.predict(pred_tensor_basis)
-        
+
         # Package results
         dlm_pred = DistributedLagModelPredResults(
             pred_func=pred_func,
             dlm_params={
-                'lag_max': lag_max,
-                'lag_min': lag_min,
-                'n_eval': n_eval,
-                'pred_lags': pred_lags,
-                'pred_vals': pred_vals,
-                'basis_type': self.basis_type
-            }
+                "lag_max": lag_max,
+                "lag_min": lag_min,
+                "n_eval": n_eval,
+                "pred_lags": pred_lags,
+                "pred_vals": pred_vals,
+                "basis_type": self.basis_type,
+            },
         )
-        
+
         return dlm_pred
 
 
@@ -556,34 +616,19 @@ def _lag_mat(x: np.ndarray, lags: list[int]) -> np.ndarray:
     n_rows, n_cols = x.shape
     n_lags = len(lags)
     # allocate memory
-    x_lag = np.empty(
-        shape=(n_rows, n_cols * n_lags),
-        order='F', dtype=x.dtype
-    )
+    x_lag = np.empty(shape=(n_rows, n_cols * n_lags), order="F", dtype=x.dtype)
     # fill w/ Nans
     x_lag[:] = np.nan
     # Copy lagged columns of X into X_lag
-    for i, l in enumerate(lags):
+    for i, lag in enumerate(lags):
         # target columns of X_lag
         j = i * n_cols
         k = j + n_cols  # (i+1) * ncols
         # number rows of X
-        nl = n_rows - abs(l)
+        nl = n_rows - abs(lag)
         # Copy
-        if l >= 0:
-            x_lag[l:, j:k] = x[:nl, :]
+        if lag >= 0:
+            x_lag[lag:, j:k] = x[:nl, :]
         else:
-            x_lag[:l, j:k] = x[-nl:, :]
+            x_lag[:lag, j:k] = x[-nl:, :]
     return x_lag
-
-
-
-
-
-
-
-
-
-
-
-
