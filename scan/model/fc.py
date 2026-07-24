@@ -229,6 +229,7 @@ class FCInteractionModel:
         seed_ts: np.ndarray,
         func_data: np.ndarray,
         modulator: np.ndarray,
+        weights: np.ndarray | None = None,
     ) -> FCInteractionResults:
         """
         Estimate seed-based functional connectivity modulation using a linear
@@ -243,6 +244,9 @@ class FCInteractionModel:
             1d time series data for a seed region of interest (ROI).
         modulator: np.ndarray
             1d time series used as the continuous moderator.
+        weights: np.ndarray, optional
+            1d array of weights for each time point, used in weighted regression.
+             If None, ordinary least squares regression is performed.
 
         Returns
         -------
@@ -291,7 +295,7 @@ class FCInteractionModel:
         design_matrix = np.hstack([seed_ts, modulator_term, interaction_term])
 
         self.model = LinearRegression()
-        self.model.fit(design_matrix, func_data)
+        self.model.fit(design_matrix, func_data, sample_weight=weights)
 
         coefficients = np.asarray(self.model.coef_)
         seed_beta = coefficients[:, 0]
