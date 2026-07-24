@@ -15,15 +15,17 @@ def draw_label_legend(
     labels: list[tuple[int, str, tuple[float, float, float, float]]],
     *,
     ignore_zero: bool,
-    max_items: int,
+    max_items: int | None = None,
+    legend_kwargs: dict[str, Any] | None = None,
 ) -> None:
+    """Draw a compact legend for label overlays."""
     ax.set_axis_off()
     items = []
     for key, name, rgba in labels:
         if ignore_zero and int(key) == 0:
             continue
         items.append((int(key), str(name), rgba))
-    if max_items > 0:
+    if max_items is not None and max_items > 0:
         items = items[: int(max_items)]
     if not items:
         return
@@ -32,24 +34,36 @@ def draw_label_legend(
         Patch(facecolor=rgba, edgecolor="none", label=f"{key}: {name}")
         for key, name, rgba in items
     ]
-    ax.legend(
-        handles=handles,
-        loc="center",
-        frameon=False,
-        fontsize=6,
-        handlelength=1.0,
-        handleheight=1.0,
-        labelspacing=0.4,
-        borderaxespad=0.0,
-    )
+    legend_options: dict[str, Any] = {
+        "loc": "center",
+        "frameon": False,
+        "fontsize": 12,
+        "handlelength": 1.0,
+        "handleheight": 1.0,
+        "labelspacing": 0.4,
+        "borderaxespad": 0.0,
+    }
+    if legend_kwargs:
+        legend_options.update(legend_kwargs)
+    ax.legend(handles=handles, **legend_options)
 
 
 def add_colorbar(
-    *, fig: Figure, cax: Axes, cmap: str, vmin: float, vmax: float
+    *,
+    fig: Figure,
+    cax: Axes,
+    cmap: str,
+    vmin: float,
+    vmax: float,
+    colorbar_kwargs: dict[str, Any] | None = None,
 ) -> None:
+    """Draw a vertical colorbar into the provided axes."""
     sm = plt.cm.ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
     sm.set_array([])
-    fig.colorbar(sm, cax=cax, orientation="vertical")
+    colorbar_options: dict[str, Any] = {"orientation": "vertical"}
+    if colorbar_kwargs:
+        colorbar_options.update(colorbar_kwargs)
+    fig.colorbar(sm, cax=cax, **colorbar_options)
 
 
 def build_side_axes(
@@ -65,6 +79,7 @@ def build_side_axes(
     want_legend: bool,
     side_width_ratio: float,
 ) -> tuple[list[float] | None, Any, Axes | None, Axes | None]:
+    """Build the panel grid and optional side axes for colorbars and legends."""
     width_ratios = None
     if want_side_col:
         width_ratios = (
@@ -89,10 +104,10 @@ def build_side_axes(
         if want_cbar:
             ax_cbar = inset_axes(
                 ax_side_container,
-                width="55%",
-                height=("55%" if want_legend else "70%"),
+                width=("70%" if want_legend else "80%"),
+                height=("64%" if want_legend else "82%"),
                 loc="upper center" if want_legend else "center",
-                borderpad=0.0,
+                borderpad=0.35,
             )
         if want_legend:
             ax_legend = inset_axes(
@@ -106,6 +121,7 @@ def build_side_axes(
 
 
 def annotate_time(*, fig: Figure, time_s: float, black_bg: bool) -> None:
+    """Annotate a figure with the current time label."""
     fig.text(
         0.01,
         0.99,
