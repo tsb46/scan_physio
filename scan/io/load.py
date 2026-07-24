@@ -2,6 +2,7 @@
 Module for loading and concatenating functional (func.gii),
 eeg and physio.
 """
+
 import json
 import os
 import warnings
@@ -13,6 +14,9 @@ import numpy as np
 
 from scan.io.file import Participant
 from scan.io import utils
+
+LH_MEDIAL_WALL_MASK = "template/fsLR_hemi-L_den-32k_desc-nomedialwall_dparc.label.gii"
+RH_MEDIAL_WALL_MASK = "template/fsLR_hemi-R_den-32k_desc-nomedialwall_dparc.label.gii"
 
 
 class Gifti:
@@ -36,21 +40,27 @@ class Gifti:
         that order)
 
     """
-    def __init__(
-        self,
-        fp_gii_lh: str,
-        fp_gii_rh: str
-    ):
+
+    def __init__(self, fp_gii_lh: str, fp_gii_rh: str, no_medial_wall: bool = False):
         # Load the GIFTI files for both hemispheres
-        self.gii_lh = nb.load(fp_gii_lh) # type: ignore
-        self.gii_rh = nb.load(fp_gii_rh) # type: ignore
-        self.split_indx = self.gii_lh.darrays[0].data.shape[0] # type: ignore
+        self.gii_lh = nb.load(fp_gii_lh)  # type: ignore
+        self.gii_rh = nb.load(fp_gii_rh)  # type: ignore
+
+        # create medial wall mask if specified
+        if no_medial_wall:
+            self.mask_lh = nb.load(LH_MEDIAL_WALL_MASK).darrays[0].data.astype(bool)  # type: ignore
+            self.mask_rh = nb.load(RH_MEDIAL_WALL_MASK).darrays[0].data.astype(bool)  # type: ignore
+        else:
+            self.mask_lh = np.ones(self.gii_lh.darrays[0].data.shape[0], dtype=bool)  # type: ignore
+            self.mask_rh = np.ones(self.gii_rh.darrays[0].data.shape[0], dtype=bool)  # type: ignore
+
+        self.split_indx = self.gii_lh.darrays[0].data[self.mask_lh].shape[0]  # type: ignore
         # get # of vertices per hemisphere
-        self.lh_nvert = self.gii_lh.darrays[0].data.shape[0] # type: ignore
-        self.rh_nvert = self.gii_rh.darrays[0].data.shape[0] # type: ignore
+        self.lh_nvert = self.gii_lh.darrays[0].data[self.mask_lh].shape[0]  # type: ignore
+        self.rh_nvert = self.gii_rh.darrays[0].data[self.mask_rh].shape[0]  # type: ignore
         if self.lh_nvert != self.rh_nvert:
             raise ValueError(
-                'left and right hemispheres should have same number of vertices'
+                "left and right hemispheres should have same number of vertices"
             )
 
     def load(self) -> np.ndarray:
@@ -59,14 +69,14 @@ class Gifti:
         """
         # loop through samples and concatenate into one array
         combined_data = []
-        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays): # type: ignore
+        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays):  # type: ignore
             # Access the data arrays in the GIFTI files
-            data_left = lh_d.data
-            data_right = rh_d.data
+            data_left = lh_d.data[self.mask_lh]
+            data_right = rh_d.data[self.mask_rh]
             combined_data.append(np.hstack((data_left, data_right)))
 
         return np.vstack(combined_data)
-    
+
     def load_separate(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         load left and right hemisphere func.gii and return as separate arrays
@@ -74,28 +84,28 @@ class Gifti:
         # loop through arrays and return as separate arrays
         lh_data = []
         rh_data = []
-        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays): # type: ignore
-            lh_data.append(lh_d.data)
-            rh_data.append(rh_d.data)
+        for lh_d, rh_d in zip(self.gii_lh.darrays, self.gii_rh.darrays):  # type: ignore
+            lh_data.append(lh_d.data[self.mask_lh])
+            rh_data.append(rh_d.data[self.mask_rh])
         return np.array(lh_data), np.array(rh_data)
-    
+
     def merge(self, lh_data: np.ndarray, rh_data: np.ndarray) -> np.ndarray:
         """
         Concatenate left and right hemisphere arrays into single array
         """
         if lh_data.shape[1] != self.lh_nvert:
             raise ValueError(
-                'the # of vertices in the input left hemisphere data does'
-                'not match the number of expected left hemisphere vertices'
+                "the # of vertices in the input left hemisphere data does"
+                "not match the number of expected left hemisphere vertices"
             )
         if rh_data.shape[1] != self.rh_nvert:
             raise ValueError(
-                'the # of vertices in the input right hemisphere data does'
-                'not match the number of expected right hemisphere vertices'
+                "the # of vertices in the input right hemisphere data does"
+                "not match the number of expected right hemisphere vertices"
             )
         return np.hstack((lh_data, rh_data))
-    
-    def split(self, combined_data: np.ndarray) -> Tuple[np.ndarray,np.ndarray]:
+
+    def split(self, combined_data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         split concatenated array into left and right hemisphere arrays (in
         that order). The array is expected to have # of samples in rows
@@ -103,11 +113,11 @@ class Gifti:
         """
         if combined_data.shape[1] != (self.lh_nvert + self.rh_nvert):
             raise ValueError(
-                'the # of vertices in combined_data does not match the number '
-                'left and right hemisphere vertices'
+                "the # of vertices in combined_data does not match the number "
+                "left and right hemisphere vertices"
             )
-        data_left = combined_data[:, :self.split_indx]
-        data_right = combined_data[:, self.split_indx:]
+        data_left = combined_data[:, : self.split_indx]
+        data_right = combined_data[:, self.split_indx :]
         return data_left, data_right
 
 
@@ -140,18 +150,19 @@ class DatasetLoad:
     load_scan(data, subj, ses)
         Load data for individual scan
     """
+
     def __init__(
         self,
-        dataset: Literal['vanderbilt'],
-        subj_filt: List[str] | List[Tuple[str,str]] | None = None,
-        physio_dir: str = 'proc1_physio', # last output of physio pipeline
-        func_dir: str = 'proc6_surfacelr', # last output of func pipeline
+        dataset: Literal["vanderbilt"],
+        subj_filt: List[str] | List[Tuple[str, str]] | None = None,
+        physio_dir: str = "proc1_physio",  # last output of physio pipeline
+        func_dir: str = "proc6_surfacelr",  # last output of func pipeline
     ):
         self.dataset = dataset
         self.subj_filt = subj_filt
         # get dataset parameters
         # get data formatting
-        with open('scan/meta/params.json', 'rb') as f:
+        with open("scan/meta/params.json", "rb") as f:
             self.params = json.load(f)[dataset]
         # define output directories to search for files
         self.func_dir = f"{self.params['directory']['func']}/{func_dir}"
@@ -159,21 +170,22 @@ class DatasetLoad:
         # get scan iterator
         self.iter = Participant(dataset)
         # check if multiple sessions per subject
-        self.session_flag = 'session' in self.iter.fields
+        self.session_flag = "session" in self.iter.fields
 
     def load(
         self,
-        data_type: Tuple[str, str] | None = None,
+        data_type: Tuple[str, str] | Tuple[str] | str = ("func", "physio"),
         concat: bool = True,
         verbose: bool = True,
-        norm: Literal['zscore', 'demean', None] = 'zscore',
+        norm: Literal["zscore", "demean", None] = "zscore",
         func_low_pass: bool = False,
         func_high_pass: bool = False,
         physio_low_pass: bool = False,
         physio_high_pass: bool = False,
         input_mask: bool = False,
-        lh_roi_masks: List[str] | None= None,
-        rh_roi_masks: List[str] | None = None
+        lh_roi_masks: List[str] | None = None,
+        rh_roi_masks: List[str] | None = None,
+        roi_avg_left_right: bool = False,
     ) -> Tuple[dict, Gifti]:
         """
         Iteratively load scan data and concatenate for group
@@ -191,7 +203,7 @@ class DatasetLoad:
         ----------
         concat: bool
             Whether to temporally concatenate scan data into
-            a single array. Otherwise, return data from indvidual
+            a single array. Otherwise, return data from individual
             scans in a list (default: True).
         data: Tuple[str] | Literal['func', 'physio'] = ('func', 'physio')
             data modality. Can be functional or physio, or both. If both
@@ -217,9 +229,9 @@ class DatasetLoad:
         physio_low_pass: bool
             low-pass filtering on physio time courses (default: False)
         input_mask: bool
-            whether to apply roi masks to func.gii data (default: False). 
+            whether to apply roi masks to func.gii data (default: False).
             Masks should have have a value of 1 for vertices within the mask,
-            and 0 for vertices outside the mask. Time courses of vertices within the mask 
+            and 0 for vertices outside the mask. Time courses of vertices within the mask
             are averaged together, and returned instead of the vertex time courses.
             BOTH left and right hemisphere roi masks should be passed as a list, with
             matching ROIs in the left and right hemisphers in the same order.
@@ -231,6 +243,11 @@ class DatasetLoad:
             list of right hemisphere roi mask file paths to apply to
             func.gii data. See input_mask for more details. If input_mask is False,
             this parameter is ignored.
+        roi_avg_left_right: bool
+            whether to average left and right hemisphere ROI time courses together (default: False).
+            Note, this is only applicable if the positions of the left and right hemisphere ROI masks
+            are in the same order in the lists passed to lh_roi_masks and rh_roi_masks. If this is not the case,
+            the left and right hemisphere ROI time courses will be averaged together incorrectly.
         verbose: bool
             print progress (default: True)
 
@@ -247,29 +264,41 @@ class DatasetLoad:
         """
         # if data_type is not passed, set to all data types
         if data_type is None:
-            data_type = ('func', 'physio')
+            data_type = ("func", "physio")
         # if data_type is passed as str, convert to list
         if isinstance(data_type, str):
-            data_type = (data_type)
+            data_type = (data_type,)
         # check if data_type is valid
-        if not all(d in ['func', 'physio'] for d in data_type):
-            raise ValueError(f'data type {data_type} is not available')
+        if not all(d in ["func", "physio"] for d in data_type):
+            raise ValueError(f"data type {data_type} is not available")
 
         # if roi_masks are passed, load them
         if input_mask:
-            lh_roi, rh_roi = self._load_masks(lh_roi_masks, rh_roi_masks) # type: ignore
+            if lh_roi_masks is None or rh_roi_masks is None:
+                raise ValueError(
+                    "roi_lh_masks and roi_rh_masks must be provided if input_mask is True"
+                )
+            if roi_avg_left_right and (len(lh_roi_masks) != len(rh_roi_masks)):
+                raise ValueError(
+                    "The number of left and right hemisphere ROI masks must be the same"
+                    " if roi_avg_left_right is True"
+                )
+            lh_roi, rh_roi = self._load_masks(lh_roi_masks, rh_roi_masks)
         else:
             if lh_roi_masks is not None or rh_roi_masks is not None:
-                warnings.warn('roi masks are passed, but input_mask is False. ROI masks will be ignored.')
+                warnings.warn(
+                    "roi masks are passed, but input_mask is False. ROI masks will be ignored."
+                )
             lh_roi, rh_roi = None, None
-            
+
         # initalize output dictionary
         output = {
-            'func': [],
-            'physio': {
-                p_out: [] for p in self.params['physio']['out']
-                for p_out in self.params['physio']['out'][p]
-            }
+            "func": [],
+            "physio": {
+                p_out: []
+                for p in self.params["physio"]["out"]
+                for p_out in self.params["physio"]["out"][p]
+            },
         }
         # set func_gii as None (returns None if 'physio' is set as data)
         func_gii = None
@@ -283,10 +312,11 @@ class DatasetLoad:
                 ses = None
             # print progress
             if verbose:
-                print(f'loading scan: subj: {subj} ses: {ses}')
+                print(f"loading scan: subj: {subj} ses: {ses}")
             # loop through data modalities, load data and append to list
             data_out, func_gii = self.load_scan(
-                subj=subj, ses=str(ses), 
+                subj=subj,
+                ses=str(ses),
                 data=data_type,
                 norm=norm,
                 func_low_pass=func_low_pass,
@@ -295,34 +325,36 @@ class DatasetLoad:
                 physio_high_pass=physio_high_pass,
                 roi_lh_masks=lh_roi,
                 roi_rh_masks=rh_roi,
-                input_mask=input_mask
+                input_mask=input_mask,
+                roi_avg_left_right=roi_avg_left_right,
             )
-            output['func'].append(data_out['func'])
+            output["func"].append(data_out["func"])
 
             # loop through physio signals and append to list
-            for p in self.params['physio']['out']:
-                for p_out in self.params['physio']['out'][p]:
-                    output['physio'][p_out].append(data_out['physio'][p_out])
+            for p in self.params["physio"]["out"]:
+                for p_out in self.params["physio"]["out"][p]:
+                    output["physio"][p_out].append(data_out["physio"][p_out])
 
         # if concatenate is True, stack along the temporal dimension
         if concat:
             output = self._concat(data=data_type, data_dict=output)
 
-        return output, func_gii # type: ignore
+        return output, func_gii  # type: ignore
 
     def load_scan(
         self,
         subj: str,
         ses: str,
-        data: Tuple[str, str] | Tuple[str] | str  = ('func', 'physio'),
-        norm: Literal['zscore', 'demean', None] = 'zscore',
+        data: Tuple[str, str] | Tuple[str] | str = ("func", "physio"),
+        norm: Literal["zscore", "demean", None] = "zscore",
         func_low_pass: bool = False,
         func_high_pass: bool = False,
         physio_low_pass: bool = False,
         physio_high_pass: bool = False,
-        roi_lh_masks: Dict[str,np.ndarray] | None = None,
+        roi_lh_masks: Dict[str, np.ndarray] | None = None,
         roi_rh_masks: Dict[str, np.ndarray] | None = None,
-        input_mask: bool = False
+        input_mask: bool = False,
+        roi_avg_left_right: bool = False,
     ) -> Tuple[dict, Gifti]:
         """
         given subject and session label, load func or physio data. Data is
@@ -360,6 +392,8 @@ class DatasetLoad:
             right hemisphere roi mask with keys as the roi name
         input_mask: bool
             whether to apply roi masks to func.gii data
+        roi_avg_left_right: bool
+            whether to average left and right hemisphere ROI time courses together (default: False)
 
         Returns
         -------
@@ -374,38 +408,50 @@ class DatasetLoad:
             data = (data,)
         # check data modality labels
         for d in data:
-            if d not in ['func', 'physio']:
-                raise ValueError(f'data modality {data} is not available')
+            if d not in ["func", "physio"]:
+                raise ValueError(f"data modality {data} is not available")
 
         # set func_gii as None (returns None if 'physio' is set as data)
         func_gii = None
         # initialize output dictionary
         output = {
-            'func': [],
-            'physio': {
-                p_out: [] for p in self.params['physio']['out']
-                for p_out in self.params['physio']['out'][p]
-            }
+            "func": [],
+            "physio": {
+                p_out: []
+                for p in self.params["physio"]["out"]
+                for p_out in self.params["physio"]["out"][p]
+            },
         }
 
         for d in data:
-            if d == 'func':
+            if d == "func":
                 # get data from left and right hemispheres
                 fp_lh = self.iter.to_file(
-                    data=d, subject=subj, session=ses,
-                    basedir=self.func_dir, file_ext='lh.func.gii'
+                    data=d,
+                    subject=subj,
+                    session=ses,
+                    basedir=self.func_dir,
+                    file_ext="lh.func.gii",
                 )
                 fp_rh = self.iter.to_file(
-                    data=d, subject=subj, session=ses,
-                    basedir=self.func_dir, file_ext='rh.func.gii'
+                    data=d,
+                    subject=subj,
+                    session=ses,
+                    basedir=self.func_dir,
+                    file_ext="rh.func.gii",
                 )
                 # load gifti data
                 func_gii = Gifti(fp_lh, fp_rh)
                 if input_mask:
+                    if roi_lh_masks is None or roi_rh_masks is None:
+                        raise ValueError(
+                            "roi_lh_masks and roi_rh_masks must be provided if input_mask is True"
+                        )
                     func_data = self._extract_roi(
                         func_gii,
-                        roi_lh_masks, # type: ignore
-                        roi_rh_masks # type: ignore
+                        roi_lh_masks,
+                        roi_rh_masks,
+                        roi_avg_left_right=roi_avg_left_right,
                     )
                 else:
                     func_data = func_gii.load()
@@ -415,44 +461,49 @@ class DatasetLoad:
                     func_data,
                     low_pass=func_low_pass,
                     high_pass=func_high_pass,
-                    tr=self.params['func']['tr']
+                    tr=self.params["func"]["tr"],
                 )
                 # normalize data, if specified in init
                 func_data_proc = utils.norm(func_data_proc, norm=norm)
                 output[d] = func_data_proc
 
-            if d == 'physio':
+            if d == "physio":
                 # loop through physio signals of dataset
                 output[d] = {}
-                for p in self.params['physio']['out']:
-                    for p_out in self.params['physio']['out'][p]:
+                for p in self.params["physio"]["out"]:
+                    for p_out in self.params["physio"]["out"][p]:
                         # all physio preprocessing outputs are .txt files
                         physio_fp = self.iter.to_file(
-                            data=d, subject=subj, session=ses,
-                            basedir=self.physio_dir, physio=p_out,
-                            file_ext='txt', physio_type='out'
+                            data=d,
+                            subject=subj,
+                            session=ses,
+                            basedir=self.physio_dir,
+                            physio=p_out,
+                            file_ext="txt",
+                            physio_type="out",
                         )
                         physio = np.loadtxt(physio_fp, ndmin=2)
                         # signal filtering, if specified in init
                         # do not filter or normalize if physio is sample weights
-                        if p_out != 'weight':
+                        if p_out != "weight":
                             physio = utils.filter(
-                                physio, 
-                                low_pass=physio_low_pass, 
+                                physio,
+                                low_pass=physio_low_pass,
                                 high_pass=physio_high_pass,
-                                tr=self.params['func']['tr']
+                                tr=self.params["func"]["tr"],
                             )
                             # normalize data, if specified in init
                             physio = utils.norm(physio, norm=norm)
                         output[d][p_out] = physio
 
-        return output, func_gii # type: ignore
+        return output, func_gii  # type: ignore
 
     def _extract_roi(
         self,
         gifti: Gifti,
-        left_roi_masks: Dict[str,np.ndarray],
-        right_roi_masks: Dict[str, np.ndarray]
+        left_roi_masks: Dict[str, np.ndarray],
+        right_roi_masks: Dict[str, np.ndarray],
+        roi_avg_left_right: bool = False,
     ) -> np.ndarray:
         """
         extract roi time courses from func.gii data
@@ -465,12 +516,15 @@ class DatasetLoad:
             left hemisphere roi mask with keys as the roi name
         right_roi_masks: Dict[str, np.ndarray]
             right hemisphere roi mask with keys as the roi name
+        roi_avg_left_right: bool
+            whether to average left and right hemisphere ROI time courses together (default: False)
 
         Returns
         -------
         roi_data: np.ndarray
             roi time courses arranged in column-order (left hemisphere time courses
-            followed by right hemisphere time courses)
+            followed by right hemisphere time courses). If roi_avg_left_right is True,
+            left and right hemisphere time courses are averaged together.
         """
         lh_func, rh_func = gifti.load_separate()
         # loop through roi masks and extract roi time courses
@@ -483,64 +537,65 @@ class DatasetLoad:
             roi_data.append(rh_func[:, rh_roi].mean(axis=1)[:, np.newaxis])
             roi_names.append(rh_roi_name)
         roi_data = np.hstack(roi_data)
-        # set roi names for future reference
-        self.roi_names = roi_names
+        if roi_avg_left_right:
+            # average left and right hemisphere time courses together
+            half = roi_data.shape[1] // 2
+            roi_data = (roi_data[:, :half] + roi_data[:, half:]) / 2
+            self.roi_names = [
+                f"{lh_roi_name}_{rh_roi_name}"
+                for lh_roi_name, rh_roi_name in zip(
+                    left_roi_masks.keys(), right_roi_masks.keys()
+                )
+            ]
+        else:
+            # set roi names for future reference
+            self.roi_names = roi_names
         return roi_data
 
-        
     def _load_masks(
-        self, 
-        lh_roi_mask_fps: List[str], 
-        rh_roi_mask_fps: List[str]
+        self, lh_roi_mask_fps: List[str], rh_roi_mask_fps: List[str]
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """
         check if roi masks are valid and load them
         """
         # check if roi_masks are passed as a list
         if not isinstance(lh_roi_mask_fps, list):
-            raise ValueError('lh_roi_masks must be passed as a list')
+            raise ValueError("lh_roi_masks must be passed as a list")
         # check if roi_masks are passed as a list
         if not isinstance(rh_roi_mask_fps, list):
-            raise ValueError('rh_roi_masks must be passed as a list')
+            raise ValueError("rh_roi_masks must be passed as a list")
         # check if roi masks are valid
         if not all(os.path.exists(roi_mask) for roi_mask in lh_roi_mask_fps):
-            raise ValueError('lh_roi_masks must be valid file paths')
+            raise ValueError("lh_roi_masks must be valid file paths")
         if not all(os.path.exists(roi_mask) for roi_mask in rh_roi_mask_fps):
-            raise ValueError('rh_roi_masks must be valid file paths')
+            raise ValueError("rh_roi_masks must be valid file paths")
         # load roi masks
-        lh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in lh_roi_mask_fps] # type: ignore
-        rh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in rh_roi_mask_fps] # type: ignore
+        lh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in lh_roi_mask_fps]  # type: ignore
+        rh_roi = [nb.load(roi_mask).darrays[0].data for roi_mask in rh_roi_mask_fps]  # type: ignore
         # check if roi masks are valid
         utils.check_roi_masks(lh_roi, rh_roi)
         # convert to boolean mask
         lh_roi_mask = {
-            roi_name: roi_mask == 1 
+            roi_name: roi_mask == 1
             for roi_name, roi_mask in zip(lh_roi_mask_fps, lh_roi)
         }
         rh_roi_mask = {
-            roi_name: roi_mask == 1 
+            roi_name: roi_mask == 1
             for roi_name, roi_mask in zip(rh_roi_mask_fps, rh_roi)
         }
         return lh_roi_mask, rh_roi_mask
 
-    def _concat(    
-        self,
-        data: Tuple[str, str],
-        data_dict: dict
-    ) -> dict:
+    def _concat(self, data: Tuple[str, str], data_dict: dict) -> dict:
         """
         temorally concatenate func and/or physio data across scans
         """
         for d in data:
-            if d == 'func':
-                data_dict['func'] = np.concatenate(data_dict['func'], axis=0)
-            elif d == 'physio':
-                for p in self.params['physio']['out']:
-                    for p_out in self.params['physio']['out'][p]:
-                        data_dict['physio'][p_out] = np.concatenate(
-                            data_dict['physio'][p_out], axis=0
+            if d == "func":
+                data_dict["func"] = np.concatenate(data_dict["func"], axis=0)
+            elif d == "physio":
+                for p in self.params["physio"]["out"]:
+                    for p_out in self.params["physio"]["out"][p]:
+                        data_dict["physio"][p_out] = np.concatenate(
+                            data_dict["physio"][p_out], axis=0
                         )
         return data_dict
-
-
-
