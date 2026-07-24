@@ -99,6 +99,34 @@ def main():
     nib.save(fslr_lh_mouth_gii[0], f"{OUTPUT_DIR}/lh.MOUTH_fsLR.label.gii")  # type: ignore
     nib.save(fslr_rh_mouth_gii[0], f"{OUTPUT_DIR}/rh.MOUTH_fsLR.label.gii")  # type: ignore
 
+    # get the union of the foot/hand/mouth ROIs to create a mask of all effector-specific ROIs
+    fslr_lh_effector_mask = np.logical_or.reduce(
+        [
+            fslr_lh_foot_gii[0].darrays[0].data == 1,  # type: ignore
+            fslr_lh_hand_gii[0].darrays[0].data == 1,  # type: ignore
+            fslr_lh_mouth_gii[0].darrays[0].data == 1,  # type: ignore
+        ]
+    )
+    fslr_rh_effector_mask = np.logical_or.reduce(
+        [
+            fslr_rh_foot_gii[0].darrays[0].data == 1,  # type: ignore
+            fslr_rh_hand_gii[0].darrays[0].data == 1,  # type: ignore
+            fslr_rh_mouth_gii[0].darrays[0].data == 1,  # type: ignore
+        ]
+    )
+    # create gifti files for the effector-specific ROI masks
+    gii_lh_effector_mask = nib.gifti.gifti.GiftiImage()
+    gii_lh_effector_mask.add_gifti_data_array(
+        nib.gifti.gifti.GiftiDataArray(fslr_lh_effector_mask.astype(np.float32))
+    )
+    gii_rh_effector_mask = nib.gifti.gifti.GiftiImage()
+    gii_rh_effector_mask.add_gifti_data_array(
+        nib.gifti.gifti.GiftiDataArray(fslr_rh_effector_mask.astype(np.float32))
+    )
+    # save the effector-specific ROI mask gifti files
+    nib.save(gii_lh_effector_mask, f"{OUTPUT_DIR}/lh.EFFECTOR_fsLR.label.gii")  # type: ignore
+    nib.save(gii_rh_effector_mask, f"{OUTPUT_DIR}/rh.EFFECTOR_fsLR.label.gii")  # type: ignore
+
     # find connected components to separate merged ROIs
     lh_labels, lh_coords, n_lh_comp = find_components(lh_surf, fslr_lh_scan_gii[0])  # type: ignore
     rh_labels, rh_coords, n_rh_comp = find_components(rh_surf, fslr_rh_scan_gii[0])  # type: ignore
