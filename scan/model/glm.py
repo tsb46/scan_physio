@@ -281,7 +281,7 @@ class DistributedLagModel:
         if weights is None:
             weights = np.ones(X.shape[0])
         # fit Ridge regression model
-        self.glm = Ridge(alpha=self.alpha, fit_intercept=False)
+        self.glm = Ridge(alpha=self.alpha, fit_intercept=True)
         self.glm.fit(
             x_basis[~self.nan_mask],
             Y[~self.nan_mask],
@@ -381,8 +381,8 @@ class DistributedLagModel:
 class MultivariateDistributedLagModel:
     """
     Multivariate distributed lag model that extends DistributedLagModel to handle
-    multiple time series and their interactions. Creates a tensor product basis
-    across all time series and their lags.
+    multiple time series and their interactions. Creates a basis of main effects
+    and pairwise interactions across all time series and their lags.
 
     Parameters
     ----------
@@ -450,14 +450,14 @@ class MultivariateDistributedLagModel:
             self.bases.append(basis)
 
         # Create tensor product basis across all signals
-        self.tensor_basis, self.nan_mask = self._create_tensor_basis(X)
+        self.tensor_basis, self.nan_mask = self._create_pairwise_interaction_basis(X)
 
         # if weights is None, set to ones
         if weights is None:
             weights = np.ones(X.shape[0])
 
         # Fit Ridge regression
-        self.glm = Ridge(alpha=self.alpha, fit_intercept=False)
+        self.glm = Ridge(alpha=self.alpha, fit_intercept=True)
         self.glm.fit(
             self.tensor_basis[~self.nan_mask],
             Y[~self.nan_mask],
@@ -466,9 +466,11 @@ class MultivariateDistributedLagModel:
 
         return self
 
-    def _create_tensor_basis(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _create_pairwise_interaction_basis(
+        self, X: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Create tensor product basis by taking outer product of all signal bases.
+        Create pairwise interaction basis by taking outer product of all signal bases.
 
         Parameters
         ----------
@@ -609,26 +611,44 @@ class MultivariateDistributedLagModel:
 
 def _lag_mat(x: np.ndarray, lags: list[int]) -> np.ndarray:
     """
-    Create array of time-lagged copies of the time course. Modified
-    for negative lags from:
-    https://github.com/ulf1/lagmat
+    Create array of time-lagged copies of the time course.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input array of shape (n_timepoints, n_features)
+    lags : list[int]
+        List of integer lags. Positive = shift forward in time (x[t-lag]),
+        negative = shift backward (x[t+|lag|])
+
+    Returns
+    -------
+    np.ndarray
+        Lagged matrix of shape (n_timepoints, n_features * n_lags)
     """
     n_rows, n_cols = x.shape
     n_lags = len(lags)
-    # allocate memory
-    x_lag = np.empty(shape=(n_rows, n_cols * n_lags), order="F", dtype=x.dtype)
-    # fill w/ Nans
-    x_lag[:] = np.nan
-    # Copy lagged columns of X into X_lag
+
+    # Allocate output and fill with NaNs
+    x_lag = np.full((n_rows, n_cols * n_lags), np.nan, dtype=x.dtype)
+
     for i, lag in enumerate(lags):
-        # target columns of X_lag
-        j = i * n_cols
-        k = j + n_cols  # (i+1) * ncols
-        # number rows of X
-        nl = n_rows - abs(lag)
-        # Copy
-        if lag >= 0:
-            x_lag[lag:, j:k] = x[:nl, :]
-        else:
-            x_lag[:lag, j:k] = x[-nl:, :]
+        col_start = i * n_cols
+        col_end = col_start + n_cols
+
+        if lag == 0:
+            # No shift
+            x_lag[:, col_start:col_end] = x
+
+        elif lag > 0:
+            # Shift DOWN: x[t - lag]
+            # First `lag` rows are invalid
+            x_lag[lag:, col_start:col_end] = x[: n_rows - lag, :]
+
+        else:  # lag < 0
+            shift = abs(lag)
+            # Shift UP: x[t + shift]
+            # Last `shift` rows are invalid
+            x_lag[: n_rows - shift, col_start:col_end] = x[shift:, :]
+
     return x_lag
